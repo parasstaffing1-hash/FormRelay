@@ -277,6 +277,8 @@ export const SettingsPage: FC<{
                     <label for="api-key-name">Name</label>
                     <input class="input" id="api-key-name" name="name" placeholder="e.g. CI, Zapier, Mobile" required style="max-width:320px" />
                   </div>
+                  <div class="field" style="margin:0;min-width:150px"><label for="api-key-scope">Scope</label><select class="select" id="api-key-scope" name="scope"><option value="read_write">Read + write</option><option value="read">Read only</option><option value="write">Write only</option></select></div>
+                  <div class="field" style="margin:0;width:130px"><label for="api-key-expiry">Expires</label><select class="select" id="api-key-expiry" name="expires_days"><option value="0">Never</option><option value="30">30 days</option><option value="90">90 days</option><option value="365">1 year</option></select></div>
                   <button class="btn btn-primary" type="submit">Create key</button>
                 </form>
                 <p class="hint small t2" style="margin-top:6px">Key format: <code class="mono">fr_live_</code> + 32 alnum. Stored as SHA-256 hash + prefix (first 12 chars) + last4.</p>
@@ -288,6 +290,8 @@ export const SettingsPage: FC<{
                       <tr>
                         <th>Name</th>
                         <th>Key</th>
+                        <th>Scope</th>
+                        <th>Expires</th>
                         <th>Last used</th>
                         <th>Created</th>
                         <th style="width:90px"></th>
@@ -298,6 +302,8 @@ export const SettingsPage: FC<{
                         <tr class="row">
                           <td><span class="cell-main">{k.name}</span><span class="cell-sub mono" style="font-size:11px">{k.id}</span></td>
                           <td><code class="mono" style="font-size:12px">{k.prefix}…{k.last4}</code></td>
+                          <td><span class="badge badge-neutral">{k.scope ?? "read_write"}</span></td>
+                          <td><span class="t2 small">{k.expires_at ? fmtDateTime(k.expires_at) : "never"}</span></td>
                           <td><span class="t2 small">{k.last_used_at ? fmtDateTime(k.last_used_at) : "never"}</span></td>
                           <td><span class="t2 small">{fmtDateTime(k.created_at)}</span></td>
                           <td>

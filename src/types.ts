@@ -108,7 +108,7 @@ export type FileRow = {
 
 export type FileWithContext = FileRow & { form_name: string | null };
 
-export type ApiKeyRow = { id:string; name:string; prefix:string; hash:string; last4:string; last_used_at:number|null; created_at:number };
+export type ApiKeyRow = { id:string; name:string; prefix:string; hash:string; last4:string; scope?: "read" | "write" | "read_write" | string; expires_at?: number | null; last_used_at:number|null; created_at:number };
 export type AuditRow = { id:number; action:string; target_id:string; detail:string; created_at:number };
 
 export type WorkflowAction = { type: "email" | "webhook" | "notify" | "add_tag" | "wait" | "integration"; url?: string; value?: string; delayMs?: number; provider?: string; mapping?: Record<string, string> };

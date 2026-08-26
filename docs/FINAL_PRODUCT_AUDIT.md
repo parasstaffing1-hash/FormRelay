@@ -27,10 +27,12 @@ The implementation deliberately keeps the existing modular Worker architecture: 
 | Workflows | Form-scoped or global workflow definitions, trigger conditions, notification/email/webhook/tag/wait/integration actions, retries, run/step history, pause/resume/delete/replay UI | `workflows`, `workflow_runs`, `workflow_steps` | Workflow creation and management smoke |
 | Notifications | New completed submission and failed workflow notifications, list view, mark-all-read action | `notifications` | Route and migration verified by typecheck; local runtime smoke previously passed |
 | Form health | Pre-publish checks for missing labels, schema references, invalid redirects, empty schemas, missing email provider configuration, and upload constraints | Derived from form/schema | `/admin/forms/:id/health` route |
+| Funnel analytics | Durable view/submission events, 30-day view trend, conversion bars, UTM campaign attribution, and referrers | `form_events` plus form counters | D1 init, typecheck, public view wiring |
+| API credentials | SHA-256 hashed bearer keys with read, write, or read-write scopes and optional expiry | `api_keys` | Typecheck and admin settings flow |
 
 ## Migrations
 
-The bootstrap schema in `schema.sql` contains the complete current shape. Existing installations must apply `migrations/0002-smart-forms-workflows.sql` once. It adds form sharing and theme columns, response lifecycle and resume columns, workflow definitions and execution history, notification storage, and workspace membership tables. The migration is intentionally a one-time upgrade because SQLite `ALTER TABLE ... ADD COLUMN` statements are not idempotent when a column already exists.
+The bootstrap schema in `schema.sql` contains the complete current shape. Existing installations must apply `migrations/0002-smart-forms-workflows.sql` once. It adds form sharing and theme columns, response lifecycle and resume columns, workflow definitions and execution history, notification storage, workspace membership tables, version snapshots, form events, response metadata, and API-key scopes/expiry. The migration is intentionally a one-time upgrade because SQLite `ALTER TABLE ... ADD COLUMN` statements are not idempotent when a column already exists.
 
 The primary response invariant is preserved:
 
@@ -42,7 +44,7 @@ A completed response is stored with `status = 'completed'`; spam is stored with 
 
 The implementation preserves JSX auto-escaping for ordinary user content, rejects unsafe theme asset protocols, limits theme text and closed-message lengths, hashes resume tokens before D1 storage, expires resume tokens, and never evaluates user expressions through `eval`, `Function`, or equivalent dynamic code execution. Workflow webhook URLs are restricted to HTTP(S), and workflow actions are bounded to two attempts with an eight-second outbound request timeout.
 
-The deployment now supports per-user signed sessions, workspace memberships, single-use hashed invitations, owner-only member management, and viewer read-only enforcement. Query-level workspace isolation is still incomplete because legacy D1 helpers default to the bootstrap workspace; it remains explicitly marked partial in `FEATURE_MATRIX.md`. CSRF hardening beyond same-origin checks and webhook secret rotation remain follow-up work. Administrators should deploy behind HTTPS, rotate `SESSION_SECRET`, use a strong `ADMIN_PASSWORD`, keep `.dev.vars` out of source control, and configure Cloudflare secret storage for production credentials.
+The deployment now supports per-user signed sessions, workspace memberships, single-use hashed invitations, owner-only member management, viewer read-only enforcement, durable funnel events, and least-privilege API keys. Query-level workspace isolation is still incomplete because legacy D1 helpers default to the bootstrap workspace; it remains explicitly marked partial in `FEATURE_MATRIX.md`. CSRF hardening beyond same-origin checks and webhook secret rotation remain follow-up work. Administrators should deploy behind HTTPS, rotate `SESSION_SECRET`, use a strong `ADMIN_PASSWORD`, keep `.dev.vars` out of source control, and configure Cloudflare secret storage for production credentials.
 
 ## Performance and reliability
 
@@ -92,6 +94,7 @@ The repository was pushed to `main` in the following feature commits:
 | `b75172b` | Workspace members, provider adapters, advanced endings, embed SDK, replay, and response management |
 | `8136d4c` | Persist disqualification ending schema |
 | `1fe70de` | Version history, upload hardening, and bulk response operations |
+| pending | Durable funnel analytics and scoped API credentials |
 
 ## Remaining work
 

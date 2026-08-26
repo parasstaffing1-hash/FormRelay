@@ -41,3 +41,14 @@ CREATE TABLE IF NOT EXISTS form_versions (
   created_by TEXT NOT NULL DEFAULT 'system'
 );
 CREATE INDEX IF NOT EXISTS idx_form_versions_form ON form_versions (form_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS form_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  form_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  referer TEXT NOT NULL DEFAULT '',
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_form_events_form_time ON form_events (form_id, created_at DESC);
+ALTER TABLE api_keys ADD COLUMN scope TEXT NOT NULL DEFAULT 'read_write';
+ALTER TABLE api_keys ADD COLUMN expires_at INTEGER;

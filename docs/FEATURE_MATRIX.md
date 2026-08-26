@@ -27,11 +27,11 @@ Legend — **DONE** = UI works + backend works + data persists + errors handled 
 | Public form renderer (schema-driven) | DONE | 4 | Typeform/Tally | advanced field types | P0 | schema | smoke ✅ |
 | Server-side field validation (as renderer) | DONE | 4 | Typeform | client-side parity | P0 | blocks | smoke ✅ |
 | Form versioning (draft vs published snapshot) | DONE | 3 | Typeform | version history UI | P1 | schema | smoke ✅ |
-| **Analytics per form** (30d bars, views, completion/spam rate, referrers) | DONE | 4 | Tally | — | P1 | db agg | smoke ✅ |
+| **Analytics per form** (30d bars, views, completion/spam rate, referrers) | DONE | 5 | Tally | cohort filters and exportable funnels | P1 | db agg, form_events | typecheck ✅ |
 | Home 14-day sparkline | DONE | 3 | Jotform | — | P1 | db agg | smoke ✅ |
 | Spill large values to R2 (D1 size guard) | DONE | 3 | — | — | P1 | R2 | smoke ✅ |
 | Retention policy (auto-prune days) | DONE | 3 | — | scheduled cron | P1 | cron trigger | smoke ✅ |
-| **API keys** (create/list/revoke, SHA-256 hash, prefix+last4) | DONE | 4 | — | — | P1 | schema | smoke ✅ |
+| **API keys** (create/list/revoke, SHA-256 hash, prefix+last4) | DONE | 5 | — | per-key read/write scope, expiry, and rotation | P1 | schema | typecheck ✅ |
 | **REST API `/api/v1`** (forms/responses) | DONE | 4 | — | — | P1 | keys | smoke ✅ |
 | Audit log (form/key/response actions) | PARTIAL | 3 | — | cover webhook/integration actions | P2 | schema | partial |
 | Templates (preset schemas) | DONE | 4 | Tally | — | P1 | schema | smoke ✅ |

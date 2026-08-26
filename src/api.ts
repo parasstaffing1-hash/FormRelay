@@ -45,6 +45,11 @@ api.use("*", async (c, next) => {
     return c.json({ error: "Unauthorized" }, 401);
   }
   const now = Date.now();
+  if (key.expires_at != null && key.expires_at <= now) return c.json({ error: "API key expired" }, 401);
+  const isWrite = ["POST", "PUT", "PATCH", "DELETE"].includes(c.req.method);
+  const scope = key.scope || "read_write";
+  if (isWrite && scope === "read") return c.json({ error: "API key is read-only" }, 403);
+  if (!isWrite && scope === "write") return c.json({ error: "API key is write-only" }, 403);
   const entry = rateLimit.get(key.id);
   if (!entry || now > entry.resetAt) {
     rateLimit.set(key.id, { count: 1, resetAt: now + RATE_WINDOW_MS });

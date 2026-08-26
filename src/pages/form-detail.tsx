@@ -384,7 +384,7 @@ export const FormDetailPage: FC<{
 };
 
 const AnalyticsView: FC<{ analytics: FormAnalytics }> = ({ analytics }) => {
-  const { daily, views, total, spam, referrers } = analytics;
+  const { daily, dailyViews, views, total, spam, referrers, campaigns } = analytics;
   const completion = views > 0 ? (total / views) * 100 : 0;
   const spamRate = total > 0 ? (spam / total) * 100 : 0;
   const max = Math.max(...daily.map((d) => d.count), 1);
@@ -431,6 +431,13 @@ const AnalyticsView: FC<{ analytics: FormAnalytics }> = ({ analytics }) => {
         </svg>
         {total === 0 ? <p class="t2 small mt8" style="text-align:center">No submissions in the last 30 days.</p> : null}
       </div>
+
+      <div class="card card-b mb16">
+        <div class="flex between mb8"><span class="small" style="font-weight:600">Funnel signals — last 7 days</span><span class="muted small">views vs. submissions</span></div>
+        <div style="display:grid;gap:8px">{dailyViews.slice(-7).map((view, i) => { const submitted = daily.slice(-7)[i]?.count ?? 0; const width = view.count ? Math.min(100, submitted / view.count * 100) : 0; return <div><div class="flex between small"><span class="muted">{view.date.slice(5)}</span><span>{fmtNumber(view.count)} views · {fmtNumber(submitted)} submissions</span></div><div style="height:6px;background:var(--border);border-radius:999px;margin-top:4px"><div style={`height:6px;width:${width}%;background:var(--accent);border-radius:999px`}></div></div></div>; })}</div>
+      </div>
+
+      {campaigns.length ? <div class="card mb16"><div class="card-h">Campaign attribution</div><table class="tbl"><thead><tr><th>Source</th><th>Medium</th><th>Campaign</th><th class="num">Views</th></tr></thead><tbody>{campaigns.map((campaign) => <tr><td>{campaign.source}</td><td>{campaign.medium}</td><td>{campaign.campaign}</td><td class="num">{fmtNumber(campaign.count)}</td></tr>)}</tbody></table></div> : null}
 
       <div class="card">
         <div class="card-h">Top referrers</div>

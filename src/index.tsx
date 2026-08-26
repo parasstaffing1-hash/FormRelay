@@ -38,6 +38,7 @@ import {
   listDeliveries,
   getAnalytics,
   getDashboardAnalytics,
+  recordFormEvent,
   getSetting,
   setSetting,
   createApiKey,
@@ -151,6 +152,11 @@ async function verifyUserSessionToken(token: string | undefined, secret: string)
   if (parts.length !== 4) return false;
   const payload = parts.slice(0, 3).join(".");
   return (await hmacVerify(payload, parts[3], secret)) && Number(parts[2]) > Date.now();
+}
+
+function trackingMetadata(url: string): Record<string, string> {
+  const params = new URL(url).searchParams;
+  return Object.fromEntries(["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content"].map((key) => [key, params.get(key) || ""]).filter(([, value]) => value));
 }
 
 function originOf(url: string): string {
@@ -482,6 +488,7 @@ app.post("/f/:id", async (c) => {
       c.executionCtx.waitUntil(
         Promise.allSettled([
           sendNotification(c.env, form, data),
+          recordFormEvent(c.env.DB, formId, "submission", referer, trackingMetadata(c.req.url)),
           sendAutoReply(c.env, form, data),
           ...(submissionId !== null
             ? activeHooks.map((h) => deliverSubmission(c.env.DB, h, { id: form.id, name: form.name }, submissionId, data, createdAt))
@@ -600,7 +607,10 @@ app.get("/f/:id", async (c) => {
     const partial = await getSubmissionByResumeHash(c.env.DB, await sha256Hex(resume));
     if (partial && partial.form_id === form.id) values = { ...values, ...valuesFromStored(partial.data) };
   }
-  c.executionCtx.waitUntil(incrementFormViews(c.env.DB, form.id));
+    c.executionCtx.waitUntil(Promise.all([
+      incrementFormViews(c.env.DB, form.id),
+      recordFormEvent(c.env.DB, form.id, "view", c.req.header("referer") || "", trackingMetadata(c.req.url)),
+    ]));
   const origin = originOf(c.req.url);
   return c.html(<PublicFormPage form={form} schema={schema} origin={origin} values={values} />);
 });
@@ -1356,6 +1366,9 @@ app.post("/admin/api-keys", async (c) => {
   const body = await c.req.parseBody();
   const name = String(body.name ?? "").trim();
   if (!name) return c.redirect("/admin/settings?section=api&msg=Name+required");
+  const scope = ["read", "write", "read_write"].includes(String(body.scope)) ? String(body.scope) : "read_write";
+  const expiryDays = [30, 90, 365].includes(Number(body.expires_days)) ? Number(body.expires_days) : 0;
+  const expiresAt = expiryDays ? Date.now() + expiryDays * 86400000 : null;
   const token = await (async () => {
     const a = "abcdefghijkmnopqrstuvwxyz23456789";
     const b = crypto.getRandomValues(new Uint8Array(32));
@@ -1366,7 +1379,7 @@ app.post("/admin/api-keys", async (c) => {
   const hash = await sha256Hex(token);
   const prefix = token.slice(0, 12);
   const last4 = token.slice(-4);
-  const row = await createApiKey(c.env.DB, { name, prefix, hash, last4 });
+  const row = await createApiKey(c.env.DB, { name, prefix, hash, last4, scope, expiresAt });
   await audit(c.env.DB, "key.created", row.id, name);
   return c.redirect(`/admin/settings?section=api&createdKey=${encodeURIComponent(token)}&msg=Key+created`);
 });

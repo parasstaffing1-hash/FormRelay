@@ -95,6 +95,17 @@ CREATE TABLE IF NOT EXISTS form_versions (
 );
 CREATE INDEX IF NOT EXISTS idx_form_versions_form ON form_versions (form_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS form_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  form_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  referer TEXT NOT NULL DEFAULT '',
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  FOREIGN KEY(form_id) REFERENCES forms(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_form_events_form_time ON form_events (form_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS submissions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   form_id TEXT NOT NULL,
@@ -166,6 +177,8 @@ CREATE TABLE IF NOT EXISTS api_keys (
   prefix TEXT NOT NULL UNIQUE,
   hash TEXT NOT NULL UNIQUE,
   last4 TEXT NOT NULL,
+  scope TEXT NOT NULL DEFAULT 'read_write',
+  expires_at INTEGER,
   last_used_at INTEGER,
   created_at INTEGER NOT NULL
 );

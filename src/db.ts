@@ -310,10 +310,12 @@ export async function recentSubmissions(db: D1Database, limit = 8): Promise<Subm
 export type AnalyticsDaily = { date: string; count: number };
 export type FormAnalytics = {
   daily: AnalyticsDaily[];
+  dailyViews: AnalyticsDaily[];
   views: number;
   total: number;
   spam: number;
   referrers: { referer: string; count: number }[];
+  campaigns: { source: string; medium: string; campaign: string; count: number }[];
 };
 export type DashboardAnalytics = { daily: AnalyticsDaily[] };
 
@@ -331,6 +333,10 @@ function fillDaily(days: number): AnalyticsDaily[] {
     out.push({ date: dateKey(dt), count: 0 });
   }
   return out;
+}
+
+export async function recordFormEvent(db: D1Database, formId: string, kind: "view" | "submission", referer: string, metadata: Record<string, string> = {}): Promise<void> {
+  await db.prepare("INSERT INTO form_events (form_id, kind, created_at, referer, metadata_json) VALUES (?, ?, ?, ?, ?)").bind(formId, kind, Date.now(), referer.slice(0, 500), JSON.stringify(metadata)).run();
 }
 
 export async function getAnalytics(db: D1Database, formId: string): Promise<FormAnalytics> {
@@ -364,12 +370,20 @@ export async function getAnalytics(db: D1Database, formId: string): Promise<Form
     if (v !== undefined) bucket.count = v;
   }
 
+  const eventRows = await db.prepare("SELECT strftime('%Y-%m-%d', datetime(created_at/1000, 'unixepoch')) AS d, COUNT(*) AS c FROM form_events WHERE form_id = ? AND kind = 'view' AND created_at >= ? GROUP BY d ORDER BY d").bind(formId, cutoff).all<{ d: string; c: number }>();
+  const dailyViews = fillDaily(30);
+  const viewMap = new Map<string, number>();
+  for (const row of eventRows.results ?? []) viewMap.set(row.d, row.c);
+  for (const bucket of dailyViews) bucket.count = viewMap.get(bucket.date) ?? 0;
+  const campaignRows = await db.prepare("SELECT json_extract(metadata_json, '$.utm_source') AS source, json_extract(metadata_json, '$.utm_medium') AS medium, json_extract(metadata_json, '$.utm_campaign') AS campaign, COUNT(*) AS count FROM form_events WHERE form_id = ? AND kind = 'view' GROUP BY source, medium, campaign ORDER BY count DESC LIMIT 10").bind(formId).all<{ source: string | null; medium: string | null; campaign: string | null; count: number }>();
   return {
     daily,
+    dailyViews,
     views,
     total: totalRow?.n ?? 0,
     spam: spamRow?.n ?? 0,
-    referrers: (refRows.results ?? []).map((r) => ({ referer: r.referer, count: r.count })),
+    referrers: refRows.results ?? [],
+    campaigns: (campaignRows.results ?? []).filter((row) => row.source || row.medium || row.campaign).map((row) => ({ source: row.source ?? "(direct)", medium: row.medium ?? "—", campaign: row.campaign ?? "—", count: row.count })),
   };
 }
 
@@ -464,7 +478,7 @@ export async function listDeliveries(db: D1Database, webhookId: string, limit = 
 
 export async function createApiKey(
   db: D1Database,
-  params: { name: string; prefix: string; hash: string; last4: string }
+  params: { name: string; prefix: string; hash: string; last4: string; scope?: string; expiresAt?: number | null }
 ): Promise<ApiKeyRow> {
   const row: ApiKeyRow = {
     id: `ak_${randomId(12)}`,
@@ -472,12 +486,14 @@ export async function createApiKey(
     prefix: params.prefix,
     hash: params.hash,
     last4: params.last4,
+    scope: params.scope || "read_write",
+    expires_at: params.expiresAt ?? null,
     last_used_at: null,
     created_at: Date.now(),
   };
   await db
-    .prepare("INSERT INTO api_keys (id, name, prefix, hash, last4, last_used_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .bind(row.id, row.name, row.prefix, row.hash, row.last4, row.last_used_at, row.created_at)
+    .prepare("INSERT INTO api_keys (id, name, prefix, hash, last4, scope, expires_at, last_used_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .bind(row.id, row.name, row.prefix, row.hash, row.last4, row.scope || "read_write", row.expires_at ?? null, row.last_used_at, row.created_at)
     .run();
   return row;
 }
