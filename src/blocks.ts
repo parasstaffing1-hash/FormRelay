@@ -79,7 +79,7 @@ export type LogicAction =
   | { type: "show" | "hide" | "require"; target: string; value?: boolean }
   | { type: "show-section" | "hide-section"; target: string }
   | { type: "jump-to-page"; target: string }
-  | { type: "jump-to-ending"; target: string }
+  | { type: "jump-to-ending" | "disqualify"; target: string }
   | { type: "redirect"; target: string }
   | { type: "set-variable"; target: string; value: string };
 export type LogicRule = {
@@ -89,7 +89,7 @@ export type LogicRule = {
   actions: LogicAction[];
 };
 export type LLogicRule = LogicRule;
-export type FormEnding = { id: string; title: string; message: string; redirectUrl?: string; conditions?: LogicGroup[] };
+export type FormEnding = { id: string; title: string; message: string; redirectUrl?: string; conditions?: LogicGroup[]; disqualified?: boolean };
 
 export type FormSchemaV1 = {
   version: 1;
