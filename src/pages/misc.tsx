@@ -4,7 +4,9 @@ import { PageHead, Button, EmptyState, UsageMeter } from "../ui/components";
 import {
   IconZap, IconFile, IconLogo, IconAlert,
 } from "../ui/icons";
-import { FormRow, FormWithStats, DashboardStats } from "../types";
+import { FormRow, FormWithStats, DashboardStats, FileWithContext } from "../types";
+import { fmtBytes, fmtDateTime, fmtNumber } from "../util";
+import { FILES_PAGE_SIZE } from "../files";
 
 /* ================= workflows (coming soon) ================= */
 
@@ -34,27 +36,115 @@ export const WorkflowsPage: FC<{
   </AppShell>
 );
 
-/* ================= files (coming soon) ================= */
+/* ================= files ================= */
+
+const R2_FREE_TIER_BYTES = 10 * 1024 * 1024 * 1024;
+
+const R2_SETUP_SNIPPET = `npx wrangler r2 bucket create formrelay-files
+
+# then in wrangler.toml:
+# [[r2_buckets]]
+# binding = "FILES"
+# bucket_name = "formrelay-files"
+
+npx wrangler deploy`;
 
 export const FilesPage: FC<{
   path: string;
+  files: FileWithContext[];
+  total: number;
+  page: number;
+  storageUsed: number;
+  hasR2: boolean;
   toastMsg?: string;
   commands: CommandItem[];
   formCount: number;
   submissionCount: number;
-}> = ({ path, toastMsg, commands, formCount, submissionCount }) => (
-  <AppShell path={path} crumbs={[{ label: "Files" }]} toastMsg={toastMsg} commands={commands} formCount={formCount} submissionCount={submissionCount}>
-    <PageHead title="Files" sub="Attachments uploaded through your forms." />
-    <div class="mb24" style="max-width:420px">
-      <UsageMeter label="Storage" used="0 MB" total="1 GB" pct={0} />
-    </div>
-    <EmptyState
-      icon={<IconFile size={20} />}
-      title="No files yet"
-      desc="File uploads are coming soon. Until then, submissions store field data only."
-    />
-  </AppShell>
-);
+}> = ({ path, files, total, page, storageUsed, hasR2, toastMsg, commands, formCount, submissionCount }) => {
+  const rangeStart = (page - 1) * FILES_PAGE_SIZE + 1;
+  const rangeEnd = Math.min(page * FILES_PAGE_SIZE, total);
+  const showPager = files.length > 0 && (rangeEnd < total || page > 1);
+  const pct = Math.round((storageUsed / R2_FREE_TIER_BYTES) * 100);
+
+  return (
+    <AppShell path={path} crumbs={[{ label: "Files" }]} toastMsg={toastMsg} commands={commands} formCount={formCount} submissionCount={submissionCount}>
+      <PageHead title="Files" sub="Attachments uploaded through your forms." />
+      {hasR2 ? (
+        <>
+          <div class="mb24" style="max-width:420px">
+            <UsageMeter label="Storage" used={fmtBytes(storageUsed)} total="10 GB" pct={pct} />
+          </div>
+          {files.length ? (
+            <>
+              <div class="card" style="padding:0 14px">
+                <table class="tbl">
+                  <thead>
+                    <tr>
+                      <th>Filename</th>
+                      <th style="width:150px">Type</th>
+                      <th style="width:90px" class="num">Size</th>
+                      <th style="width:140px">Form</th>
+                      <th style="width:160px">Uploaded</th>
+                      <th style="width:170px"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {files.map((f) => (
+                      <tr class="row">
+                        <td>
+                          <div class="cell-main truncate" style="max-width:240px">{f.filename}</div>
+                          <div class="cell-sub mono">{f.field_name || "—"}</div>
+                        </td>
+                        <td><span class="t2 small truncate" style="display:block;max-width:140px">{f.content_type || "—"}</span></td>
+                        <td class="num">{fmtBytes(f.size)}</td>
+                        <td><a href={`/admin/forms/${f.form_id}`} class="t2 truncate" style="display:block;max-width:130px">{f.form_name ?? f.form_id}</a></td>
+                        <td><span class="t2 small">{fmtDateTime(f.created_at)}</span></td>
+                        <td>
+                          <div class="flex gap8" style="justify-content:flex-end">
+                            <a class="btn btn-secondary btn-sm" href={`/admin/files/${f.id}/download`}>Download</a>
+                            <form method="post" action={`/admin/files/${f.id}/delete`} style="display:inline">
+                              <button class="btn btn-danger btn-sm" type="submit">Delete</button>
+                            </form>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {showPager ? (
+                <div
+                  class="flex gap8"
+                  style="align-items:center;border-top:1px solid var(--border);margin-top:12px;padding-top:10px"
+                >
+                  <span class="muted small">
+                    {fmtNumber(rangeStart)}–{fmtNumber(rangeEnd)} of {fmtNumber(total)}
+                  </span>
+                  <span style="flex:1"></span>
+                  {page > 1 ? <a class="btn btn-secondary btn-sm" href={`/admin/files?page=${page - 1}`}>Prev</a> : null}
+                  {rangeEnd < total ? <a class="btn btn-secondary btn-sm" href={`/admin/files?page=${page + 1}`}>Next</a> : null}
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <EmptyState
+              icon={<IconFile size={20} />}
+              title="No files yet"
+              desc='Add <input type="file" name="attachment"> to any form — multipart uploads are stored in your R2 bucket and listed here.'
+            />
+          )}
+        </>
+      ) : (
+        <EmptyState
+          icon={<IconFile size={20} />}
+          title="File storage is not configured"
+          desc="Bind an R2 bucket named FILES to store uploads. Submissions still record [file: name] as text without it."
+          snippet={R2_SETUP_SNIPPET}
+        />
+      )}
+    </AppShell>
+  );
+};
 
 /* ================= settings ================= */
 

@@ -105,31 +105,72 @@ export async function insertSubmission(
   return result.meta?.last_row_id ?? null;
 }
 
-export type SubmissionFilter = { formId?: string; spamOnly?: boolean; limit?: number };
+export const SUBMISSIONS_PAGE_SIZE = 25;
 
-export async function listSubmissions(db: D1Database, filter: SubmissionFilter = {}): Promise<SubmissionWithContext[]> {
+export type SubmissionFilter = { formId?: string; spamOnly?: boolean; limit?: number; page?: number };
+
+function submissionWhere(filter: SubmissionFilter): { where: string; binds: (string | number)[] } {
   const clauses: string[] = [];
   const binds: (string | number)[] = [];
   if (filter.formId) { clauses.push("s.form_id = ?"); binds.push(filter.formId); }
   if (filter.spamOnly) clauses.push("s.is_spam = 1");
-  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-  const { results } = await db
-    .prepare(
-      `SELECT s.*, f.name AS form_name FROM submissions s
-       LEFT JOIN forms f ON f.id = s.form_id
-       ${where} ORDER BY s.created_at DESC LIMIT ?`
-    )
-    .bind(...binds, filter.limit ?? 100)
-    .all<SubmissionWithContext>();
+  return { where: clauses.length ? `WHERE ${clauses.join(" AND ")}` : "", binds };
+}
+
+function pageOffset(page: number): number {
+  return Math.max(1, Math.floor(page)) - 1;
+}
+
+export async function listSubmissions(db: D1Database, filter: SubmissionFilter = {}): Promise<SubmissionWithContext[]> {
+  const { where, binds } = submissionWhere(filter);
+  const p = filter.page;
+  const sql =
+    `SELECT s.*, f.name AS form_name FROM submissions s
+     LEFT JOIN forms f ON f.id = s.form_id
+     ${where} ORDER BY s.created_at DESC LIMIT ?${p !== undefined ? " OFFSET ?" : ""}`;
+  const pagingBinds: (string | number)[] =
+    p !== undefined
+      ? [SUBMISSIONS_PAGE_SIZE, pageOffset(p) * SUBMISSIONS_PAGE_SIZE]
+      : [filter.limit ?? 100];
+  const { results } = await db.prepare(sql).bind(...binds, ...pagingBinds).all<SubmissionWithContext>();
   return results ?? [];
 }
 
-export async function listSubmissionsForForm(db: D1Database, formId: string, limit = 200): Promise<SubmissionRow[]> {
-  const { results } = await db
-    .prepare("SELECT * FROM submissions WHERE form_id = ? ORDER BY created_at DESC LIMIT ?")
-    .bind(formId, limit)
-    .all<SubmissionRow>();
+export async function countSubmissions(db: D1Database, filter: SubmissionFilter = {}): Promise<number> {
+  const { where, binds } = submissionWhere(filter);
+  const row = await db
+    .prepare(`SELECT COUNT(*) AS n FROM submissions s ${where}`)
+    .bind(...binds)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+export type FormSubmissionsOptions = { page?: number; limit?: number };
+
+export async function listSubmissionsForForm(
+  db: D1Database,
+  formId: string,
+  opts: FormSubmissionsOptions = {}
+): Promise<SubmissionRow[]> {
+  let sql = "SELECT * FROM submissions WHERE form_id = ? ORDER BY created_at DESC";
+  const params: (string | number)[] = [formId];
+  if (opts.page !== undefined) {
+    sql += " LIMIT ? OFFSET ?";
+    params.push(SUBMISSIONS_PAGE_SIZE, pageOffset(opts.page) * SUBMISSIONS_PAGE_SIZE);
+  } else if (opts.limit !== undefined) {
+    sql += " LIMIT ?";
+    params.push(opts.limit);
+  }
+  const { results } = await db.prepare(sql).bind(...params).all<SubmissionRow>();
   return results ?? [];
+}
+
+export async function countSubmissionsForForm(db: D1Database, formId: string): Promise<number> {
+  const row = await db
+    .prepare("SELECT COUNT(*) AS n FROM submissions WHERE form_id = ?")
+    .bind(formId)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
 }
 
 export async function getSubmission(db: D1Database, id: number): Promise<SubmissionWithContext | null> {

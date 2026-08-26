@@ -81,6 +81,14 @@ export const CLIENT_JS = String.raw`
     if (e.target.closest("[data-close-modal]")) closeModal(e.target.closest(".overlay"));
   });
 
+  /* ---------- theme ---------- */
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest("[data-toggle-theme]")) return;
+    var next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    try { localStorage.setItem("fr.theme", next); } catch (err) {}
+  });
+
   /* ---------- sidebar ---------- */
   var shell = document.querySelector(".shell");
   function toggleRail() {

@@ -13,7 +13,9 @@ import {
   deleteForm,
   insertSubmission,
   listSubmissions,
+  countSubmissions,
   listSubmissionsForForm,
+  countSubmissionsForForm,
   getSubmission,
   deleteSubmission,
   setSubmissionSpam,
@@ -30,6 +32,7 @@ import {
 import { sendNotification, sendAutoReply } from "./email";
 import { checkSpam, normalizePayload } from "./spam";
 import { deliverSubmission, sendTestWebhook } from "./webhooks";
+import { getFiles, countFiles, totalStorage, getFile, saveUpload, deleteFile } from "./files";
 import { CLIENT_JS } from "./ui/client";
 import type { CommandItem } from "./ui/shell";
 import { HomePage } from "./pages/home";
@@ -79,6 +82,11 @@ function originOf(url: string): string {
 function msgFrom(c: { req: { url: string } }): string | undefined {
   const msg = new URL(c.req.url).searchParams.get("msg");
   return msg ?? undefined;
+}
+
+function parsePage(raw: string | null): number {
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 1 ? n : 1;
 }
 
 function baseCommands(origin: string): CommandItem[] {
@@ -131,6 +139,7 @@ app.post("/f/:id", async (c) => {
 
   const ct = contentType.toLowerCase();
   let data: Record<string, string>;
+  let uploads: { fieldName: string; file: File }[] = [];
   if (ct.includes("application/json")) {
     try {
       const body = await c.req.json();
@@ -139,7 +148,11 @@ app.post("/f/:id", async (c) => {
       data = {};
     }
   } else {
-    data = normalizePayload(await c.req.parseBody());
+    const raw = await c.req.parseBody();
+    data = normalizePayload(raw);
+    for (const [fieldName, value] of Object.entries(raw)) {
+      if (value instanceof File && value.size > 0) uploads.push({ fieldName, file: value });
+    }
   }
   const isJson = ct.includes("application/json") || "_json" in data;
 
@@ -168,6 +181,13 @@ app.post("/f/:id", async (c) => {
   const submissionId = await insertSubmission(
     c.env.DB, formId, stripControlFields(data), ip, userAgent, referer, verdict.spam
   );
+
+  if (c.env.FILES && uploads.length > 0 && !verdict.spam) {
+    const env = c.env;
+    c.executionCtx.waitUntil(
+      Promise.allSettled(uploads.map((u) => saveUpload(env, formId, submissionId, u.fieldName, u.file)))
+    );
+  }
 
   if (!verdict.spam) {
     const hooks = await listWebhooks(c.env.DB, formId);
@@ -294,8 +314,10 @@ app.get("/admin/forms/:id", async (c) => {
   const tab = (["submissions", "setup", "notifications", "webhooks", "settings"] as const).includes(tabParam as never)
     ? (tabParam as FormTab)
     : "submissions";
-  const [subs, hooks, stats] = await Promise.all([
-    listSubmissionsForForm(c.env.DB, form.id),
+  const subsPage = parsePage(url.searchParams.get("page"));
+  const [subs, subsTotal, hooks, stats] = await Promise.all([
+    listSubmissionsForForm(c.env.DB, form.id, { page: subsPage }),
+    countSubmissionsForForm(c.env.DB, form.id),
     listWebhooks(c.env.DB, form.id),
     getDashboardStats(c.env.DB),
   ]);
@@ -305,6 +327,8 @@ app.get("/admin/forms/:id", async (c) => {
       form={form}
       tab={tab}
       subs={subs}
+      subsPage={subsPage}
+      subsTotal={subsTotal}
       webhooks={hooks}
       origin={originOf(c.req.url)}
       created={url.searchParams.get("created") === "1"}
@@ -357,7 +381,7 @@ app.post("/admin/forms/:id/delete", async (c) => {
 app.get("/admin/forms/:id/export", async (c) => {
   const form = await getForm(c.env.DB, c.req.param("id"));
   if (!form) return c.notFound();
-  const subs = await listSubmissionsForForm(c.env.DB, form.id, 5000);
+  const subs = await listSubmissionsForForm(c.env.DB, form.id, { limit: 5000 });
   return exportCsv(form, subs);
 });
 
@@ -393,11 +417,12 @@ app.get("/admin/submissions", async (c) => {
   const url = new URL(c.req.url);
   const formId = url.searchParams.get("form") || undefined;
   const spamOnly = url.searchParams.get("spam") === "1";
-  const [subs, forms] = await Promise.all([
-    listSubmissions(c.env.DB, { formId, spamOnly, limit: 100 }),
+  const page = parsePage(url.searchParams.get("page"));
+  const [subs, total, forms] = await Promise.all([
+    listSubmissions(c.env.DB, { formId, spamOnly, page }),
+    countSubmissions(c.env.DB, { formId, spamOnly }),
     listForms(c.env.DB),
   ]);
-  const totalRow = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM submissions").first<{ n: number }>();
   const stats = await getDashboardStats(c.env.DB);
   return c.html(
     <InboxPage
@@ -406,7 +431,8 @@ app.get("/admin/submissions", async (c) => {
       forms={forms}
       activeForm={formId}
       spamOnly={spamOnly}
-      total={totalRow?.n ?? stats.submission_count}
+      page={page}
+      total={total}
       toastMsg={msgFrom(c)}
       commands={baseCommands(originOf(c.req.url))}
       formCount={stats.form_count}
@@ -553,16 +579,47 @@ app.get("/admin/workflows", async (c) => {
 });
 
 app.get("/admin/files", async (c) => {
+  const page = parsePage(new URL(c.req.url).searchParams.get("page"));
+  const [files, total, storage] = await Promise.all([
+    getFiles(c.env.DB, { page }),
+    countFiles(c.env.DB),
+    totalStorage(c.env.DB),
+  ]);
   const stats = await getDashboardStats(c.env.DB);
   return c.html(
     <FilesPage
       path="/admin/files"
+      files={files}
+      total={total}
+      page={page}
+      storageUsed={storage}
+      hasR2={!!c.env.FILES}
       toastMsg={msgFrom(c)}
       commands={baseCommands(originOf(c.req.url))}
       formCount={stats.form_count}
       submissionCount={stats.submission_count}
     />
   );
+});
+
+app.get("/admin/files/:id/download", async (c) => {
+  const row = await getFile(c.env.DB, c.req.param("id"));
+  if (!row || !c.env.FILES) return c.text("File not found — file storage may not be configured.", 404);
+  const object = await c.env.FILES.get(row.r2_key);
+  if (!object) return c.text("File object is missing from storage.", 404);
+  return new Response(object.body, {
+    headers: {
+      "content-type": object.httpMetadata?.contentType || row.content_type || "application/octet-stream",
+      "content-disposition": `attachment; filename="${row.filename.replace(/["\\]/g, "")}"`,
+      "content-length": String(object.size),
+    },
+  });
+});
+
+app.post("/admin/files/:id/delete", async (c) => {
+  const row = await getFile(c.env.DB, c.req.param("id"));
+  if (row) await deleteFile(c.env, c.env.DB, row);
+  return c.redirect("/admin/files?msg=File+deleted");
 });
 
 /* ---------- settings ---------- */

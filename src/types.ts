@@ -6,6 +6,7 @@ export type Bindings = {
   MAIL_FROM?: string;
   TURNSTILE_SECRET_KEY?: string;
   WORKSPACE_NAME?: string;
+  FILES?: R2Bucket;
 };
 
 export type FormRow = {
@@ -64,3 +65,17 @@ export type DashboardStats = {
   submission_count: number;
   month_count: number;
 };
+
+export type FileRow = {
+  id: string;
+  form_id: string;
+  submission_id: number | null;
+  filename: string;
+  content_type: string;
+  size: number;
+  r2_key: string;
+  field_name: string;
+  created_at: number;
+};
+
+export type FileWithContext = FileRow & { form_name: string | null };

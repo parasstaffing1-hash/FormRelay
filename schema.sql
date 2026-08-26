@@ -50,3 +50,17 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
 
 CREATE INDEX IF NOT EXISTS idx_deliveries_wh
   ON webhook_deliveries (webhook_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS files (
+  id TEXT PRIMARY KEY,
+  form_id TEXT NOT NULL,
+  submission_id INTEGER,
+  filename TEXT NOT NULL,
+  content_type TEXT NOT NULL DEFAULT '',
+  size INTEGER NOT NULL DEFAULT 0,
+  r2_key TEXT NOT NULL,
+  field_name TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_files_form ON files (form_id);

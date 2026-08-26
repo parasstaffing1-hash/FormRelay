@@ -87,6 +87,7 @@ export const AppShell: FC<
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
         <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;550;600;650;700&display=swap" />
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOT }} />
         <style dangerouslySetInnerHTML={{ __html: CSS }} />
       </head>
       <body data-toast={toastMsg}>
@@ -114,7 +115,7 @@ export const AppShell: FC<
                 <div>
                   {sec.label ? <div class="nav-label">{sec.label}</div> : null}
                   {sec.items.map((item) => (
-                    <a class={`sitem ${item.match(path) ? "active" : ""}`} href={item.href}>
+                    <a class={`sitem ${item.match(path) ? "active" : ""}`} href={item.href} title={item.label}>
                       {item.icon}
                       <span class="sitem-label">{item.label}</span>
                       {item.count !== undefined && item.count > 0 ? <span class="count">{item.count}</span> : null}
@@ -131,7 +132,23 @@ export const AppShell: FC<
               <div class="side-user">
                 <span class="avatar">{initial}</span>
                 <span class="label truncate">Admin</span>
-                <a href="/admin/logout" class="icon-btn right" style="width:auto;padding:0 7px;height:24px;font-size:12px" aria-label="Log out">
+                <button
+                  type="button"
+                  class="icon-btn theme-toggle right"
+                  data-toggle-theme
+                  aria-label="Toggle dark mode"
+                  title="Toggle theme"
+                  style="width:auto;padding:0 6px;height:24px;margin-right:2px"
+                >
+                  <svg class="icon-moon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+                  </svg>
+                  <svg class="icon-sun" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="4" />
+                    <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+                  </svg>
+                </button>
+                <a href="/admin/logout" class="icon-btn" style="width:auto;padding:0 7px;height:24px;font-size:12px" aria-label="Log out" title="Log out">
                   Log out
                 </a>
               </div>
@@ -162,7 +179,7 @@ export const AppShell: FC<
                   <kbd style="margin-left:auto">⌘K</kbd>
                 </button>
                 <a class="btn btn-primary btn-sm" href="/admin/forms?new=1">
-                  <IconPlus size={14} /> New form
+                  <IconPlus size={14} /> <span>New form</span>
                 </a>
               </div>
             </header>
@@ -190,4 +207,16 @@ document.addEventListener("DOMContentLoaded", function () {
   var btn = document.getElementById("open-pal");
   if (btn && window.frOpenPal) btn.addEventListener("click", function () { window.frOpenPal(); });
 });
+`;
+
+const THEME_BOOT = String.raw`
+(function () {
+  try {
+    var t = localStorage.getItem("fr.theme");
+    if (t !== "dark" && t !== "light") {
+      t = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    }
+    document.documentElement.setAttribute("data-theme", t);
+  } catch (e) {}
+})();
 `;

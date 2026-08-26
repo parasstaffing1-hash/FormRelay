@@ -4,6 +4,7 @@ import { PageHead, Button, EmptyState, Field, EndpointBox, CodeTabs, RowMenu } f
 import { StatusBadge, SpamBadge } from "../ui/components";
 import { IconWebhook, IconAlert, IconPlus } from "../ui/icons";
 import { FormRow, SubmissionRow, WebhookWithContext } from "../types";
+import { SUBMISSIONS_PAGE_SIZE } from "../db";
 import { fmtNumber, relTime, submissionRef } from "../util";
 import { NoSubmissionsEmpty } from "./shared";
 
@@ -63,6 +64,8 @@ export const FormDetailPage: FC<{
   form: FormRow;
   tab: FormTab;
   subs?: SubmissionRow[];
+  subsPage: number;
+  subsTotal: number;
   webhooks: WebhookWithContext[];
   origin: string;
   created?: boolean;
@@ -71,9 +74,14 @@ export const FormDetailPage: FC<{
   commands: { label: string; href: string; icon: string; keywords?: string }[];
   formCount: number;
   submissionCount: number;
-}> = ({ path, form, tab, subs = [], webhooks, origin, created, hasEmailProvider, toastMsg, commands, formCount, submissionCount }) => {
+}> = ({ path, form, tab, subs = [], subsPage, subsTotal, webhooks, origin, created, hasEmailProvider, toastMsg, commands, formCount, submissionCount }) => {
   const endpoint = `${origin}/f/${form.id}`;
   const activeTab: FormTab = TABS.includes(tab) ? tab : "submissions";
+
+  const rangeStart = (subsPage - 1) * SUBMISSIONS_PAGE_SIZE + 1;
+  const rangeEnd = Math.min(subsPage * SUBMISSIONS_PAGE_SIZE, subsTotal);
+  const showPager = subs.length > 0 && (rangeEnd < subsTotal || subsPage > 1);
+  const subsTabHref = (p: number) => `/admin/forms/${form.id}?tab=submissions&page=${p}`;
 
   const tabLink = (t: FormTab, label: string, badge?: number | null) => (
     <a class={`tab ${activeTab === t ? "active" : ""}`} href={`/admin/forms/${form.id}?tab=${t}`}>
@@ -125,7 +133,7 @@ export const FormDetailPage: FC<{
       </div>
 
       <div class="tabs">
-        {tabLink("submissions", "Submissions", subs.length)}
+        {tabLink("submissions", "Submissions", subsTotal)}
         {tabLink("setup", "Setup")}
         {tabLink("notifications", "Notifications")}
         {tabLink("webhooks", "Webhooks", webhooks.length)}
@@ -144,7 +152,7 @@ export const FormDetailPage: FC<{
               </tr>
             </thead>
             <tbody>
-              {subs.slice(0, 50).map((s) => {
+              {subs.map((s) => {
                 let d: Record<string, string> = {};
                 try { d = JSON.parse(s.data); } catch {}
                 const first = Object.entries(d).find(([k, v]) => !k.startsWith("_") && v.trim());
@@ -175,6 +183,20 @@ export const FormDetailPage: FC<{
         ) : (
           <NoSubmissionsEmpty endpointUrl={endpoint} />
         )
+      ) : null}
+
+      {activeTab === "submissions" && showPager ? (
+        <div
+          class="flex gap8"
+          style="align-items:center;border-top:1px solid var(--border);margin-top:12px;padding-top:10px"
+        >
+          <span class="muted small">
+            {fmtNumber(rangeStart)}–{fmtNumber(rangeEnd)} of {fmtNumber(subsTotal)}
+          </span>
+          <span style="flex:1"></span>
+          {subsPage > 1 ? <a class="btn btn-secondary btn-sm" href={subsTabHref(subsPage - 1)}>Prev</a> : null}
+          {rangeEnd < subsTotal ? <a class="btn btn-secondary btn-sm" href={subsTabHref(subsPage + 1)}>Next</a> : null}
+        </div>
       ) : null}
 
       {activeTab === "setup" ? (

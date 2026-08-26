@@ -5,6 +5,7 @@
 ## Features
 
 - **Form endpoints** — `POST /f/:formId` accepts HTML form-encoded, multipart, or JSON; CORS enabled
+- **File uploads** — multipart attachments stored in Cloudflare R2 when a binding named `FILES` is configured (gracefully degrades to `[file: name]` text without it)
 - **Spam protection** — honeypot fields (`_gotcha`/`_honeypot`/`_hp`), per-IP rate limit (10/min), optional Cloudflare Turnstile
 - **Email** — per-form notifications + optional auto-reply to the submitter via Resend
 - **Webhooks** — HMAC-SHA256 signed payloads (`whsec_…` secrets), delivery history with status codes, one-click test sends
@@ -124,8 +125,29 @@ Sign in at `/admin/login` (single password auth, 7-day session cookie).
 | `/admin/webhooks` | All webhooks + last delivery status |
 | `/admin/webhooks/:id` | Secret, deliveries history, pause/resume, test send |
 | `/admin/workflows` | Coming soon (rule-based automation) |
-| `/admin/files` | Coming soon (file uploads) |
+| `/admin/files` | Uploaded attachments — list, download, delete, storage usage |
 | `/admin/settings` | Sections: general, members, domains, API keys, notifications, billing, security |
+
+## Files
+
+Form endpoints accept multipart uploads out of the box. To store the actual bytes, configure an R2 bucket:
+
+```bash
+npx wrangler r2 bucket create formrelay-files
+```
+
+Then uncomment in `wrangler.toml` and deploy:
+
+```toml
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "formrelay-files"
+```
+
+- Objects land under `fr/<formId>/<uuid>/<filename>`; metadata goes into the `files` table (run `npm run db:init` if upgrading).
+- The submission itself stores `[file: name]` as the field value either way.
+- Without a `FILES` binding everything still works — uploads just aren't persisted, so default deploys need no bucket. Locally, `wrangler dev` simulates R2 once the binding is uncommented.
+- Manage files at `/admin/files`: per-row download + delete, total storage meter (25 per page).
 
 ## Project structure
 

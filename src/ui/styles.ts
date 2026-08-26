@@ -39,6 +39,7 @@ export const CSS = String.raw`
   --t-med: 160ms ease;
 }
 
+:root { color-scheme: light; }
 [data-theme="dark"] {
   --bg: #191919;
   --sidebar: #202020;
@@ -51,8 +52,25 @@ export const CSS = String.raw`
   --text: #ebebeb;
   --text-secondary: #a5a5a2;
   --text-muted: #767572;
+  --accent-hover: #3d90e5;
   --accent-tint: #1d3050;
+
+  --success: #74c093;
+  --success-bg: #22362b;
+  --warning: #ddb15f;
+  --warning-bg: #372e1a;
+  --danger: #e07f77;
+  --danger-bg: #3d2624;
+
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.35), 0 1px 4px rgba(0,0,0,.28);
+  --shadow-md: 0 2px 6px rgba(0,0,0,.42), 0 8px 24px rgba(0,0,0,.48);
+  --shadow-lg: 0 4px 12px rgba(0,0,0,.45), 0 16px 48px rgba(0,0,0,.55);
+
+  color-scheme: dark;
 }
+[data-theme="dark"] .overlay,
+[data-theme="dark"] .pal-overlay { background: rgba(0,0,0,.58); }
+[data-theme="dark"] body.drawer-open .backdrop { background: rgba(0,0,0,.55); }
 
 * { box-sizing: border-box; }
 html { height: 100%; }
@@ -476,6 +494,34 @@ details.menu > summary::-webkit-details-marker { display: none; }
 .auth-card { width: 100%; max-width: 340px; }
 .auth-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 26px 24px; box-shadow: var(--shadow-sm); }
 .auth-brand { display: flex; justify-content: center; margin-bottom: 18px; }
+
+/* ---------- theme toggle ---------- */
+.theme-toggle svg { display: block; }
+.theme-toggle .icon-sun { display: none; }
+[data-theme="dark"] .theme-toggle .icon-sun { display: block; }
+[data-theme="dark"] .theme-toggle .icon-moon { display: none; }
+
+/* ---------- responsive polish ---------- */
+.tbl-scroll, .card, .tabs, main.page { max-width: 100%; }
+@media (max-width: 900px) {
+  table.tbl { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+}
+@media (max-width: 700px) {
+  .stats { gap: 24px; }
+  .page-head { flex-direction: column; align-items: flex-start; }
+  .topbar-right .btn { padding: 0 9px; }
+  .topbar-right .btn span { display: none; }
+  .toast { max-width: min(88vw, 440px); }
+}
+@media (max-width: 480px) {
+  .overlay { padding: 9vh 12px 16px; }
+  .pal-overlay { padding: 11vh 10px 16px; }
+  .modal-h { padding: 12px 14px 0; }
+  .modal-b { padding: 14px; }
+  .modal-f { padding: 12px 14px; flex-wrap: wrap; }
+  .pal-foot { gap: 10px; padding: 8px 10px; }
+  .searchbtn kbd { display: none; }
+}
 
 /* landing */
 .land { max-width: 780px; margin: 0 auto; padding: 90px 24px 60px; text-align: center; }

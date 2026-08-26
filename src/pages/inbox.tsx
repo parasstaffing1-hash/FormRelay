@@ -3,6 +3,7 @@ import { AppShell } from "../ui/shell";
 import { PageHead, EmptyState } from "../ui/components";
 import { IconInbox } from "../ui/icons";
 import { FormRow, SubmissionWithContext } from "../types";
+import { SUBMISSIONS_PAGE_SIZE } from "../db";
 import { fmtNumber } from "../util";
 import { SubmissionTable } from "./shared";
 
@@ -12,13 +13,25 @@ export const InboxPage: FC<{
   forms: FormRow[];
   activeForm?: string;
   spamOnly?: boolean;
+  page: number;
   total: number;
   toastMsg?: string;
   commands: { label: string; href: string; icon: string; keywords?: string }[];
   formCount: number;
   submissionCount: number;
-}> = ({ path, subs, forms, activeForm, spamOnly, total, toastMsg, commands, formCount, submissionCount }) => {
+}> = ({ path, subs, forms, activeForm, spamOnly, page, total, toastMsg, commands, formCount, submissionCount }) => {
   const filtered = !!(activeForm || spamOnly);
+
+  const pagerHref = (p: number) => {
+    const qs = new URLSearchParams();
+    if (activeForm) qs.set("form", activeForm);
+    if (spamOnly) qs.set("spam", "1");
+    qs.set("page", String(p));
+    return `/admin/submissions?${qs.toString()}`;
+  };
+  const rangeStart = (page - 1) * SUBMISSIONS_PAGE_SIZE + 1;
+  const rangeEnd = Math.min(page * SUBMISSIONS_PAGE_SIZE, total);
+  const showPager = subs.length > 0 && (rangeEnd < total || page > 1);
 
   return (
     <AppShell
@@ -66,6 +79,19 @@ export const InboxPage: FC<{
           <div class="card" style="padding:0 14px">
             <SubmissionTable subs={subs} showForm />
           </div>
+          {showPager ? (
+            <div
+              class="flex gap8"
+              style="align-items:center;border-top:1px solid var(--border);margin-top:12px;padding-top:10px"
+            >
+              <span class="muted small">
+                {fmtNumber(rangeStart)}–{fmtNumber(rangeEnd)} of {fmtNumber(total)}
+              </span>
+              <span style="flex:1"></span>
+              {page > 1 ? <a class="btn btn-secondary btn-sm" href={pagerHref(page - 1)}>Prev</a> : null}
+              {rangeEnd < total ? <a class="btn btn-secondary btn-sm" href={pagerHref(page + 1)}>Next</a> : null}
+            </div>
+          ) : null}
         </>
       ) : (
         <EmptyState

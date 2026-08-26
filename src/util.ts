@@ -43,6 +43,19 @@ export function fmtNumber(n: number): string {
   return new Intl.NumberFormat("en-US").format(n);
 }
 
+export function fmtBytes(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = n;
+  let i = 0;
+  while (value >= 1024 && i < units.length - 1) {
+    value /= 1024;
+    i++;
+  }
+  const rounded = i === 0 ? String(value) : value >= 100 ? value.toFixed(0) : value.toFixed(1);
+  return `${rounded} ${units[i]}`;
+}
+
 export function relTime(ms: number | null | undefined): string {
   if (!ms) return "never";
   const diff = Date.now() - ms;

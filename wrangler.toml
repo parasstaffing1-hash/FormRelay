@@ -6,3 +6,10 @@ compatibility_date = "2025-01-01"
 binding = "DB"
 database_name = "formrelay"
 database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+# To enable file uploads: create a bucket `npx wrangler r2 bucket create formrelay-files`
+# then uncomment the block below and redeploy (`npm run deploy`).
+# Without this binding the app still works â€” uploads degrade to `[file: name]` text.
+# [[r2_buckets]]
+# binding = "FILES"
+# bucket_name = "formrelay-files"
