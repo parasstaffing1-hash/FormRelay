@@ -4,7 +4,7 @@ import { PageHead, Button, EmptyState, UsageMeter, CopyButton } from "../ui/comp
 import {
   IconZap, IconFile, IconLogo, IconAlert,
 } from "../ui/icons";
-import { FormRow, FormWithStats, DashboardStats, FileWithContext, ApiKeyRow, WorkflowRow, WorkflowRunRow } from "../types";
+import { FormRow, FormWithStats, DashboardStats, FileWithContext, ApiKeyRow, WorkflowRow, WorkflowRunRow, UserRow } from "../types";
 import { fmtBytes, fmtDateTime, fmtNumber } from "../util";
 import { FILES_PAGE_SIZE } from "../files";
 
@@ -32,14 +32,14 @@ export const WorkflowsPage: FC<{
           <div class="field"><label for="wf-field">If field (optional)</label><input class="input" id="wf-field" name="condition_field" placeholder="e.g. topic" /></div>
           <div class="field"><label for="wf-op">Condition</label><select class="select" id="wf-op" name="condition_operator"><option value="equals">equals</option><option value="not_equals">does not equal</option><option value="contains">contains</option><option value="gt">greater than</option><option value="lt">less than</option><option value="is_not_empty">is not empty</option></select></div>
           <div class="field"><label for="wf-value">Condition value</label><input class="input" id="wf-value" name="condition_value" placeholder="Optional value" /></div>
-          <div class="field"><label for="wf-action">Then</label><select class="select" id="wf-action" name="action_type"><option value="notify">Send notification</option><option value="email">Send email</option><option value="webhook">Send webhook</option><option value="add_tag">Add tag</option><option value="wait">Wait</option></select></div>
+          <div class="field"><label for="wf-action">Then</label><select class="select" id="wf-action" name="action_type"><option value="notify">Send notification</option><option value="email">Send email</option><option value="webhook">Send webhook</option><option value="add_tag">Add tag</option><option value="wait">Wait</option><option value="integration">Provider integration</option></select></div>
           <div class="field"><label for="wf-url">Action URL / recipient</label><input class="input" id="wf-url" name="action_url" placeholder="https://... or email" /></div>
-          <div class="field"><label for="wf-action-value">Action value</label><input class="input" id="wf-action-value" name="action_value" placeholder="Tag or delay in ms" /></div>
+          <div class="field"><label for="wf-action-value">Action value</label><input class="input" id="wf-action-value" name="action_value" placeholder="Tag or delay in ms" /></div><div class="field"><label for="wf-provider">Provider</label><select class="select" id="wf-provider" name="integration_provider"><option value="webhook">Generic JSON webhook</option><option value="slack">Slack incoming webhook</option><option value="discord">Discord webhook</option><option value="airtable">Airtable automation webhook</option><option value="google_sheets">Google Sheets automation webhook</option></select></div>
           <div class="flex" style="align-items:flex-end"><Button variant="primary" type="submit">Create workflow</Button></div>
         </form>
       </div>
     </div>
-    {workflows.length ? workflows.map((workflow) => <div class="card mb16" style="max-width:820px"><div class="card-h flex between"><span><strong>{workflow.name}</strong> <span class="badge badge-neutral">{workflow.trigger}</span></span><span class="flex gap8"><form method="post" action={`/admin/workflows/${workflow.id}/toggle`}><Button type="submit">{workflow.active ? "Pause" : "Resume"}</Button></form><form method="post" action={`/admin/workflows/${workflow.id}/delete`} onsubmit="return confirm('Delete this workflow and its run history?')"><Button variant="danger" type="submit">Delete</Button></form></span></div><div class="card-b"><p class="small t2">Scope: {workflow.form_id ? (forms.find((form) => form.id === workflow.form_id)?.name ?? workflow.form_id) : "All forms"} · Status: {workflow.active ? "active" : "paused"}</p><h3 class="small" style="margin:16px 0 8px">Recent runs</h3>{(runs[workflow.id] ?? []).length ? <table class="tbl"><thead><tr><th>Run</th><th>Status</th><th>Started</th><th>Error</th></tr></thead><tbody>{(runs[workflow.id] ?? []).map((run) => <tr><td class="mono small">{run.id}</td><td>{run.status}</td><td>{fmtDateTime(run.started_at)}</td><td class="small t2">{run.error || "—"}</td></tr>)}</tbody></table> : <p class="small t2">No runs yet. A run is created only when a matching submission arrives.</p>}</div></div>) : <EmptyState icon={<IconZap size={20} />} title="No workflows" desc="Create a rule above. Actions run after submission persistence and record success or failure." />}
+    {workflows.length ? workflows.map((workflow) => <div class="card mb16" style="max-width:820px"><div class="card-h flex between"><span><strong>{workflow.name}</strong> <span class="badge badge-neutral">{workflow.trigger}</span></span><span class="flex gap8"><form method="post" action={`/admin/workflows/${workflow.id}/toggle`}><Button type="submit">{workflow.active ? "Pause" : "Resume"}</Button></form><form method="post" action={`/admin/workflows/${workflow.id}/delete`} onsubmit="return confirm('Delete this workflow and its run history?')"><Button variant="danger" type="submit">Delete</Button></form></span></div><div class="card-b"><p class="small t2">Scope: {workflow.form_id ? (forms.find((form) => form.id === workflow.form_id)?.name ?? workflow.form_id) : "All forms"} · Status: {workflow.active ? "active" : "paused"}</p><h3 class="small" style="margin:16px 0 8px">Recent runs</h3>{(runs[workflow.id] ?? []).length ? <table class="tbl"><thead><tr><th>Run</th><th>Status</th><th>Started</th><th>Error</th><th></th></tr></thead><tbody>{(runs[workflow.id] ?? []).map((run) => <tr><td class="mono small">{run.id}</td><td>{run.status}</td><td>{fmtDateTime(run.started_at)}</td><td class="small t2">{run.error || "—"}</td><td>{run.submission_id ? <form method="post" action={`/admin/workflows/${workflow.id}/replay`}><input type="hidden" name="submission_id" value={run.submission_id} /><button class="btn btn-secondary btn-sm" type="submit">Replay</button></form> : "—"}</td></tr>)}</tbody></table> : <p class="small t2">No runs yet. A run is created only when a matching submission arrives.</p>}</div></div>) : <EmptyState icon={<IconZap size={20} />} title="No workflows" desc="Create a rule above. Actions run after submission persistence and record success or failure." />}
   </AppShell>
 );
 
@@ -180,7 +180,9 @@ export const SettingsPage: FC<{
   retentionDays?: string | null;
   apiKeys?: ApiKeyRow[];
   createdKey?: string;
-}> = ({ path, section, workspaceName, stats, formsWithNotify, toastMsg, commands, formCount, submissionCount, retentionDays, apiKeys, createdKey }) => {
+  members?: (UserRow & { role: string })[];
+  inviteUrl?: string;
+}> = ({ path, section, workspaceName, stats, formsWithNotify, toastMsg, commands, formCount, submissionCount, retentionDays, apiKeys, createdKey, members = [], inviteUrl }) => {
   const active = SECTIONS.some((s) => s.key === section) ? section : "general";
 
   return (
@@ -234,12 +236,11 @@ export const SettingsPage: FC<{
           {active === "members" ? (
             <div class="setsec">
               <h2>Members</h2>
-              <p class="desc">Invite teammates to this workspace.</p>
-              <EmptyState
-                icon={<IconZap size={18} />}
-                title="Team access is coming soon"
-                desc="FormRelay currently uses a single shared admin password. Per-user accounts are on the roadmap."
-              />
+              <p class="desc">Invite teammates with editor or viewer access.</p>
+              {inviteUrl ? <div class="callout mb16"><div><strong>Invite link — copy it now</strong><div class="mono small" style="word-break:break-all;margin-top:6px">{inviteUrl}</div></div></div> : null}
+              <form method="post" action="/admin/settings/members/invite" class="card card-b flex gap8" style="align-items:flex-end;flex-wrap:wrap"><div class="field" style="margin:0;flex:1;min-width:220px"><label for="member-email">Email</label><input class="input" id="member-email" type="email" name="email" required /></div><div class="field" style="margin:0;min-width:150px"><label for="member-role">Role</label><select class="select" id="member-role" name="role"><option value="editor">Editor</option><option value="viewer">Viewer</option></select></div><Button variant="primary" type="submit">Create invite</Button></form>
+              <div class="card mt16">{members.length ? members.map((member) => <div class="list-item between"><span><span class="cell-main">{member.name}</span><span class="cell-sub">{member.email}</span></span><span class="flex gap8"><span class="badge badge-neutral">{member.role}</span>{member.role !== "owner" ? <form method="post" action={`/admin/settings/members/${member.id}/remove`} onsubmit="return confirm('Remove this member?')"><button class="btn btn-danger btn-sm" type="submit">Remove</button></form> : null}</span></div>) : <div class="card-b"><p class="small t2">No members found. The bootstrap owner is created on the next admin login.</p></div>}</div>
+              <p class="hint small t2 mt16">Invite links are single-use and expire after seven days. Share them through a trusted channel.</p>
             </div>
           ) : null}
 
@@ -408,7 +409,7 @@ export const LoginPage: FC<{ error?: string }> = ({ error }) => (
           </div>
           <div class="auth-panel">
             <h1 style="font-size:17px;text-align:center;margin-bottom:4px">Log in to your workspace</h1>
-            <p class="t2 small" style="text-align:center;margin-bottom:18px">Enter your admin password.</p>
+            <p class="t2 small" style="text-align:center;margin-bottom:18px">Use your workspace account or the bootstrap admin password.</p>
             {error ? (
               <div class="callout mb16" style="background:var(--danger-bg);border-color:rgba(196,69,61,.25)">
                 <IconAlert size={15} />
@@ -416,6 +417,7 @@ export const LoginPage: FC<{ error?: string }> = ({ error }) => (
               </div>
             ) : null}
             <form method="post" action="/admin/login">
+              <input class="input" type="email" name="email" placeholder="Email (invited members)" aria-label="Email" style="height:38px;margin-bottom:12px" />
               <input
                 class="input"
                 type="password"

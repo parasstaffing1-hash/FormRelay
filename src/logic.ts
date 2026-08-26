@@ -22,6 +22,7 @@ export type LogicState = {
   page?: string;
   ending?: string;
   redirect?: string;
+  disqualified?: boolean;
 };
 
 export type LogicValidation = { errors: string[]; warnings: string[] };
@@ -96,8 +97,17 @@ export function applyAction(action: LogicAction, state: LogicState): void {
   else if (action.type === "hide-section") state.visible[action.target] = false;
   else if (action.type === "jump-to-page") state.page = action.target;
   else if (action.type === "jump-to-ending") state.ending = action.target;
+  else if (action.type === "disqualify") { state.ending = action.target; state.disqualified = true; }
   else if (action.type === "redirect") state.redirect = action.target;
   else if (action.type === "set-variable") setVariable(state, action.target, action.value);
+}
+
+export function selectEnding(endings: FormSchemaV2["endings"], ctx: LogicContext): FormSchemaV2["endings"][number] | null {
+  for (const ending of endings) {
+    if (!ending.conditions?.length) continue;
+    if (ending.conditions.every((group) => evaluateRule({ id: "ending", match: group.match, conditions: group.conditions, actions: [] }, ctx))) return ending;
+  }
+  return null;
 }
 
 export function pipeText(text: string, ctx: LogicContext): string {
@@ -237,7 +247,7 @@ export function validateSchemaV2(schema: FormSchemaV2): LogicValidation {
     for (const action of rule.actions) {
       if (["show", "hide", "require", "show-section", "hide-section"].includes(action.type) && !blockIds.has(action.target) && !pageIds.has(action.target)) errors.push(`Logic ${rule.id} targets a missing field or page ${action.target}.`);
       if (action.type === "jump-to-page" && !pageIds.has(action.target)) errors.push(`Logic ${rule.id} jumps to a missing page ${action.target}.`);
-      if (action.type === "jump-to-ending" && !endingIds.has(action.target)) errors.push(`Logic ${rule.id} references a missing ending ${action.target}.`);
+      if ((action.type === "jump-to-ending" || action.type === "disqualify") && !endingIds.has(action.target)) errors.push(`Logic ${rule.id} references a missing ending ${action.target}.`);
       if (action.type === "set-variable" && !variableIds.has(action.target)) errors.push(`Logic ${rule.id} sets a missing variable ${action.target}.`);
     }
   }

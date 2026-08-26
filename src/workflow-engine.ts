@@ -1,6 +1,7 @@
 import { FormRow, Bindings, WorkflowAction, WorkflowCondition, WorkflowRow } from "./types";
 import { createWorkflowRun, createWorkflowStep, finishWorkflowRun, finishWorkflowStep, createNotification } from "./db";
 import { sendNotification } from "./email";
+import { deliverIntegration, IntegrationProvider } from "./integrations";
 
 function parseConditions(raw: string): WorkflowCondition[] {
   try {
@@ -38,10 +39,11 @@ async function executeAction(env: Bindings, form: FormRow, data: Record<string, 
   }
   if (action.type === "webhook") {
     const url = action.url || action.value || "";
-    if (!/^https?:\/\//i.test(url)) throw new Error("workflow webhook URL is invalid");
-    const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "X-FormRelay-Event": "workflow.action" }, body: JSON.stringify({ form: { id: form.id, name: form.name }, data, sent_at: new Date().toISOString() }), signal: AbortSignal.timeout(8000) });
-    if (!response.ok) throw new Error(`workflow webhook HTTP ${response.status}`);
-    return `webhook delivered to ${url}`;
+    return deliverIntegration({ provider: "webhook", url }, data, { id: form.id, name: form.name });
+  }
+  if (action.type === "integration") {
+    const provider = action.provider === "slack" || action.provider === "discord" || action.provider === "airtable" || action.provider === "google_sheets" ? action.provider : "webhook";
+    return deliverIntegration({ provider, url: action.url || action.value || "", mapping: action.mapping }, data, { id: form.id, name: form.name });
   }
   if (action.type === "add_tag") {
     const tag = (action.value || "").trim();

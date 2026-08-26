@@ -52,6 +52,8 @@ export type SubmissionRow = {
   resume_revoked?: number;
   completed_at?: number | null;
   updated_at?: number;
+  tags_json?: string;
+  note?: string;
 };
 
 export type WebhookRow = {
@@ -107,9 +109,12 @@ export type FileWithContext = FileRow & { form_name: string | null };
 export type ApiKeyRow = { id:string; name:string; prefix:string; hash:string; last4:string; last_used_at:number|null; created_at:number };
 export type AuditRow = { id:number; action:string; target_id:string; detail:string; created_at:number };
 
-export type WorkflowAction = { type: "email" | "webhook" | "notify" | "add_tag" | "wait"; url?: string; value?: string; delayMs?: number };
+export type WorkflowAction = { type: "email" | "webhook" | "notify" | "add_tag" | "wait" | "integration"; url?: string; value?: string; delayMs?: number; provider?: string; mapping?: Record<string, string> };
 export type WorkflowCondition = { field: string; operator: "equals" | "not_equals" | "contains" | "gt" | "lt" | "is_not_empty"; value?: string };
 export type WorkflowRow = { id: string; form_id: string | null; name: string; trigger: "submission.completed" | "submission.partial" | "score.threshold" | "response.updated" | string; condition_json: string; actions_json: string; active: number; created_at: number; updated_at: number };
 export type WorkflowRunRow = { id: string; workflow_id: string; submission_id: number | null; status: "running" | "succeeded" | "failed" | string; started_at: number; finished_at: number | null; error: string };
 export type WorkflowStepRow = { id: number; run_id: string; step_index: number; action_type: string; status: string; detail: string; started_at: number; finished_at: number | null; retry_count: number };
 export type NotificationRow = { id: number; kind: string; title: string; detail: string; read_at: number | null; created_at: number };
+export type UserRow = { id: string; email: string; name: string; password_hash: string; created_at: number };
+export type MembershipRow = { user_id: string; workspace_id: string; role: "owner" | "editor" | "viewer" | string; created_at: number };
+export type InvitationRow = { id: string; workspace_id: string; email: string; role: "editor" | "viewer" | string; token_hash: string; expires_at: number; accepted_at: number | null; created_at: number };

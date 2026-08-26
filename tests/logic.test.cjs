@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { evaluateCondition, evaluateExpression, evaluateRules, pipeText, validateSchemaV2 } = require('../.test-build/logic.js');
+const { evaluateCondition, evaluateExpression, evaluateRules, pipeText, validateSchemaV2, selectEnding } = require('../.test-build/logic.js');
 
 test('evaluates comparisons and rejects dynamic code execution', () => {
   assert.equal(evaluateCondition({ source: 'answer', key: 'plan', operator: 'equals', value: 'pro' }, { answers: { plan: 'pro' }, variables: {}, url: {}, meta: {} }), true);
@@ -14,6 +14,13 @@ test('applies actions and answer piping', () => {
   assert.equal(state.visible.company, true);
   assert.equal(state.required.company, true);
   assert.equal(pipeText('Hello {{var:total}} / {{kind}}', { answers: { kind: 'business' }, variables: { total: 42 }, url: {}, meta: {} }), 'Hello 42 / business');
+});
+
+test('selects conditional endings and supports disqualification', () => {
+  const ctx = { answers: { score: '2' }, variables: {}, url: {}, meta: {} };
+  const ending = selectEnding([{ id: 'reject', title: 'Not eligible', message: 'Thanks.', disqualified: true, conditions: [{ match: 'all', conditions: [{ source: 'answer', key: 'score', operator: 'lt', value: 5 }] }] }], ctx);
+  assert.equal(ending.id, 'reject');
+  assert.equal(evaluateRules([{ id: 'r', match: 'all', conditions: [{ source: 'answer', key: 'score', operator: 'lt', value: 5 }], actions: [{ type: 'disqualify', target: 'reject' }] }], ctx).disqualified, true);
 });
 
 test('finds invalid schema references at publish time', () => {

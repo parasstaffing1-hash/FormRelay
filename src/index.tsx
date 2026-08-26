@@ -56,11 +56,20 @@ import {
   createNotification,
   listNotifications,
   markNotificationsRead,
+  ensureBootstrapOwner,
+  getUserByEmail,
+  listWorkspaceMembers,
+  createInvitation,
+  getInvitationByHash,
+  acceptInvitation,
+  deleteMembership,
+  getMembership,
+  updateSubmissionMeta,
 } from "./db";
 import apiApp from "./api";
 import { spillIfLarge, resolveSpilledData } from "./spill";
 import { parseSchema, emptySchema, validateBlockValue, isSchemaV2 } from "./blocks";
-import { evaluateRules, pipeText, validateSchemaV2, resolveVariables } from "./logic";
+import { evaluateRules, pipeText, validateSchemaV2, resolveVariables, selectEnding } from "./logic";
 import { executeWorkflow } from "./workflow-engine";
 import { checkFormHealth } from "./health";
 import { PublicFormPage } from "./pages/public-form";
@@ -101,6 +110,15 @@ const app = new Hono<Env>();
 // Mount API v1 subapp
 app.route("/api/v1", apiApp);
 
+app.use("*", async (c, next) => {
+  await next();
+  c.res.headers.set("X-Content-Type-Options", "nosniff");
+  c.res.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  c.res.headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  c.res.headers.set("Content-Security-Policy", "default-src 'self'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; img-src 'self' https: data:; script-src 'self' 'unsafe-inline'; connect-src 'self' https:; frame-src 'self' https:");
+  if (new URL(c.req.url).pathname.startsWith("/admin")) c.res.headers.set("X-Frame-Options", "DENY");
+});
+
 /* ---------- helpers ---------- */
 
 async function makeSessionToken(secret: string): Promise<string> {
@@ -116,6 +134,19 @@ async function verifySessionToken(token: string | undefined, secret: string): Pr
   const sig = token.slice(dot + 1);
   if (!(await hmacVerify(exp, sig, secret))) return false;
   return Number(exp) > Date.now();
+}
+
+async function makeUserSessionToken(userId: string, workspaceId: string, secret: string): Promise<string> {
+  const payload = `${userId}.${workspaceId}.${Date.now() + SESSION_TTL_MS}`;
+  return `${payload}.${await hmacSign(payload, secret)}`;
+}
+
+async function verifyUserSessionToken(token: string | undefined, secret: string): Promise<boolean> {
+  if (!token) return false;
+  const parts = token.split(".");
+  if (parts.length !== 4) return false;
+  const payload = parts.slice(0, 3).join(".");
+  return (await hmacVerify(payload, parts[3], secret)) && Number(parts[2]) > Date.now();
 }
 
 function originOf(url: string): string {
@@ -328,12 +359,9 @@ app.post("/f/:id", async (c) => {
   const schema = parseSchema(form.published_json);
   if (schema) {
     const smartVariables = isSchemaV2(schema) ? resolveVariables(schema.variables, rawPayload) : {};
-    const smartState = isSchemaV2(schema) ? evaluateRules(schema.logic, {
-      answers: rawPayload,
-      variables: smartVariables,
-      url: Object.fromEntries(new URL(c.req.url).searchParams.entries()),
-      meta: { userAgent: c.req.header("user-agent") || "", referer: c.req.header("referer") || "" },
-    }) : null;
+    const pipeContext = { answers: rawPayload, variables: smartVariables, url: Object.fromEntries(new URL(c.req.url).searchParams.entries()), meta: { userAgent: c.req.header("user-agent") || "", referer: c.req.header("referer") || "" } };
+    const smartState = isSchemaV2(schema) ? evaluateRules(schema.logic, pipeContext) : null;
+    const selectedEnding = isSchemaV2(schema) ? (smartState?.ending ? schema.endings.find((ending) => ending.id === smartState.ending) ?? null : selectEnding(schema.endings, pipeContext)) : null;
     const errors: Record<string, string> = {};
     const values: Record<string, string> = {};
     for (const block of schema.blocks) {
@@ -448,15 +476,17 @@ app.post("/f/:id", async (c) => {
       );
     }
     if (isJson) return c.json({ ok: true });
-    const pipeContext = { answers: rawPayload, variables: smartVariables, url: Object.fromEntries(new URL(c.req.url).searchParams.entries()), meta: {} };
+    const ackContext = { answers: rawPayload, variables: smartVariables, url: Object.fromEntries(new URL(c.req.url).searchParams.entries()), meta: {} };
     const dynamicRedirect = isSchemaV2(schema) && smartState?.redirect ? smartState.redirect : "";
-    const redirect = data._redirect || dynamicRedirect || form.redirect_url || pipeText(schema.settings.redirectUrl, pipeContext);
+    const endingRedirect = selectedEnding?.redirectUrl ? pipeText(selectedEnding.redirectUrl, ackContext) : "";
+    const redirect = data._redirect || dynamicRedirect || endingRedirect || form.redirect_url || pipeText(schema.settings.redirectUrl, ackContext);
     if (redirect) return c.redirect(redirect, 303);
-    if (schema.settings.successMessage && schema.settings.successMessage.trim() !== "") {
-      const msg = pipeText(schema.settings.successMessage, pipeContext);
+    if (selectedEnding || (schema.settings.successMessage && schema.settings.successMessage.trim() !== "")) {
+      const msg = selectedEnding ? pipeText(selectedEnding.message, ackContext) : pipeText(schema.settings.successMessage, ackContext);
+      const heading = selectedEnding?.title ? pipeText(selectedEnding.title, ackContext) : (smartState?.disqualified ? "Not eligible" : "Thank you!");
       const safe = escapeHtml(msg);
       return c.html(
-        `<!doctype html><body style="font-family:system-ui,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;background:#fff;color:#37352f"><div style="text-align:center;max-width:520px;padding:24px"><div style="font-size:34px;margin-bottom:8px">&#10003;</div><h1 style="font-size:20px;font-weight:600">Thank you!</h1><p style="color:#37352f;font-size:14px;margin-top:8px;white-space:pre-wrap">${safe}</p></div></body>`
+        `<!doctype html><body style="font-family:system-ui,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;background:#fff;color:#37352f"><div style="text-align:center;max-width:520px;padding:24px"><div style="font-size:34px;margin-bottom:8px">&#10003;</div><h1 style="font-size:20px;font-weight:600">${escapeHtml(heading)}</h1><p style="color:#37352f;font-size:14px;margin-top:8px;white-space:pre-wrap">${safe}</p></div></body>`
       );
     }
     return c.html(
@@ -566,10 +596,18 @@ app.get("/admin/login", (c) => c.html(<LoginPage />));
 app.post("/admin/login", async (c) => {
   const body = await c.req.parseBody();
   const password = String(body.password ?? "");
-  if (!c.env.ADMIN_PASSWORD || password !== c.env.ADMIN_PASSWORD) {
-    return c.html(<LoginPage error="Wrong password. Try again." />);
+  const email = String(body.email ?? "").trim().toLowerCase();
+  let sessionToken: string | null = null;
+  if (email) {
+    const user = await getUserByEmail(c.env.DB, email);
+    if (user && (await sha256Hex(password)) === user.password_hash) sessionToken = await makeUserSessionToken(user.id, "ws_default", c.env.SESSION_SECRET);
   }
-  setCookie(c, COOKIE, await makeSessionToken(c.env.SESSION_SECRET), {
+  if (!sessionToken && c.env.ADMIN_PASSWORD && password === c.env.ADMIN_PASSWORD) {
+    const owner = await ensureBootstrapOwner(c.env.DB, email || "owner@formrelay.local", await sha256Hex(password), email || "Workspace owner", c.env.WORKSPACE_NAME || "My workspace");
+    sessionToken = await makeUserSessionToken(owner.id, "ws_default", c.env.SESSION_SECRET);
+  }
+  if (!sessionToken) return c.html(<LoginPage error="Wrong email or password. Try again." />);
+  setCookie(c, COOKIE, sessionToken, {
     httpOnly: true,
     sameSite: "Lax",
     path: "/",
@@ -583,15 +621,46 @@ app.get("/admin/logout", (c) => {
   return c.redirect("/admin/login");
 });
 
+app.get("/invite/:token", async (c) => {
+  const invite = await getInvitationByHash(c.env.DB, await sha256Hex(c.req.param("token")));
+  if (!invite) return c.text("This invitation is invalid or expired.", 410);
+  return c.html(<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Join FormRelay</title><style dangerouslySetInnerHTML={{ __html: CSS }} /></head><body style="font-family:system-ui;max-width:460px;margin:12vh auto;padding:24px"><h1>Join FormRelay</h1><p>Accept the invitation for <strong>{invite.email}</strong> as an <strong>{invite.role}</strong>.</p><form method="post" action={`/invite/${c.req.param("token")}`}><label>Name<input name="name" required style="display:block;width:100%;padding:8px;margin:6px 0 14px" /></label><label>Password<input type="password" name="password" minlength={10} required style="display:block;width:100%;padding:8px;margin:6px 0 14px" /></label><button type="submit">Create account</button></form></body></html>);
+});
+
+app.post("/invite/:token", async (c) => {
+  const invite = await getInvitationByHash(c.env.DB, await sha256Hex(c.req.param("token")));
+  if (!invite) return c.text("This invitation is invalid or expired.", 410);
+  const body = await c.req.parseBody();
+  const name = String(body.name ?? "").trim();
+  const password = String(body.password ?? "");
+  if (name.length < 2 || password.length < 10) return c.text("Name and a password of at least 10 characters are required.", 400);
+  const user = await acceptInvitation(c.env.DB, invite, name, await sha256Hex(password));
+  setCookie(c, COOKIE, await makeUserSessionToken(user.id, invite.workspace_id, c.env.SESSION_SECRET), { httpOnly: true, sameSite: "Lax", path: "/", maxAge: SESSION_TTL_MS / 1000 });
+  return c.redirect("/admin?msg=Invitation+accepted");
+});
+
 /* ---------- admin auth gate ---------- */
 
 app.use("/admin/*", async (c, next) => {
   const path = new URL(c.req.url).pathname;
   if (path === "/admin/login" || path === "/admin/logout") return next();
   const token = getCookie(c, COOKIE);
-  if (!(await verifySessionToken(token, c.env.SESSION_SECRET))) {
-    return c.redirect("/admin/login");
+  const userSessionValid = await verifyUserSessionToken(token, c.env.SESSION_SECRET);
+  let authorized = userSessionValid;
+  let membership: Awaited<ReturnType<typeof getMembership>> = null;
+  if (userSessionValid && token) {
+    const parts = token.split(".");
+    if (parts[0] && parts[1]) membership = await getMembership(c.env.DB, parts[0], parts[1]);
+    authorized = !!membership;
   }
+  if (!authorized) authorized = await verifySessionToken(token, c.env.SESSION_SECRET);
+  if (!authorized) return c.redirect("/admin/login");
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(c.req.method)) {
+    const requestOrigin = c.req.header("origin") || c.req.header("referer");
+    if (requestOrigin && new URL(requestOrigin).origin !== new URL(c.req.url).origin) return c.text("Cross-origin admin mutation rejected.", 403);
+  }
+  if (membership?.role === "viewer" && c.req.method === "POST") return c.text("Viewer memberships are read-only.", 403);
+  if (membership && path.startsWith("/admin/settings/members") && membership.role !== "owner") return c.text("Only workspace owners can manage members.", 403);
   await next();
 });
 
@@ -619,7 +688,12 @@ app.get("/admin", async (c) => {
 
 app.get("/dashboard", (c) => c.redirect("/admin"));
 
-/* ---------- forms ---------- */
+app.get("/embed.js", (c) => {
+  const js = `(function(){function mount(target,src,opts){var host=typeof target==='string'?document.querySelector(target):target;if(!host)throw new Error('FormRelay mount target not found');var frame=document.createElement('iframe');frame.src=src;frame.title=(opts&&opts.title)||'Form';frame.loading='lazy';frame.style.width='100%';frame.style.minHeight=(opts&&opts.minHeight)||'520px';frame.style.border='0';host.appendChild(frame);var onMessage=function(e){if(e.source!==frame.contentWindow||!e.data||String(e.data.type||'').indexOf('formrelay:')!==0)return;if(e.data.type==='formrelay:ready'&&opts&&opts.onReady)opts.onReady(e);if(e.data.type==='formrelay:submitted'&&opts&&opts.onSubmit)opts.onSubmit(e)};window.addEventListener('message',onMessage);return {iframe:frame,destroy:function(){window.removeEventListener('message',onMessage);frame.remove()}}}function popup(src,opts){var overlay=document.createElement('div');overlay.style='position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:2147483647;padding:5vh 5vw';var close=document.createElement('button');close.textContent='Close';close.style='position:absolute;right:6vw;top:3vh;z-index:2';var host=document.createElement('div');host.style='height:90vh;background:#fff;border-radius:12px;overflow:hidden';overlay.appendChild(close);overlay.appendChild(host);document.body.appendChild(overlay);var mounted=mount(host,src,opts||{});close.onclick=function(){mounted.destroy();overlay.remove()};return mounted}window.FormRelay={mount:mount,popup:popup}})();`;
+  return new Response(js, { headers: { "content-type": "application/javascript; charset=utf-8", "cache-control": "public, max-age=300" } });
+});
+
+/* ---------- public forms ---------- */
 
 app.get("/admin/forms", async (c) => {
   const url = new URL(c.req.url);
@@ -844,6 +918,13 @@ app.post("/admin/forms/:id/delete", async (c) => {
   return c.redirect("/admin/forms?msg=Form+deleted");
 });
 
+app.get("/admin/forms/:id/export.json", async (c) => {
+  const form = await getForm(c.env.DB, c.req.param("id"));
+  if (!form) return c.notFound();
+  const subs = await listSubmissionsForForm(c.env.DB, form.id, { limit: 5000 });
+  return new Response(JSON.stringify({ form: { id: form.id, name: form.name }, responses: subs }), { headers: { "content-type": "application/json; charset=utf-8", "content-disposition": `attachment; filename="${form.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-submissions.json"` } });
+});
+
 app.get("/admin/forms/:id/export", async (c) => {
   const form = await getForm(c.env.DB, c.req.param("id"));
   if (!form) return c.notFound();
@@ -955,6 +1036,20 @@ app.post("/admin/submissions/:id/spam", async (c) => {
   return c.redirect(`${back}?msg=Saved`);
 });
 
+app.post("/admin/submissions/:id/meta", async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.parseBody();
+  const status = ["completed", "partial", "abandoned", "spam"].includes(String(body.status)) ? String(body.status) : "completed";
+  const tags = String(body.tags ?? "").split(",").map((tag) => tag.trim().toLowerCase()).filter(Boolean).filter((tag, index, all) => all.indexOf(tag) === index).slice(0, 20);
+  const sub = Number.isInteger(id) ? await getSubmission(c.env.DB, id) : null;
+  if (sub) {
+    await updateSubmissionMeta(c.env.DB, id, { status, tagsJson: JSON.stringify(tags), note: String(body.note ?? "") });
+    await audit(c.env.DB, "response.updated", String(id), `status=${status}; tags=${tags.length}`);
+  }
+  const back = typeof body.back === "string" && body.back.startsWith("/") ? body.back : "/admin/submissions";
+  return c.redirect(`${back}?msg=Response+updated`);
+});
+
 /* ---------- webhooks ---------- */
 
 app.get("/admin/webhooks", async (c) => {
@@ -1056,7 +1151,7 @@ app.post("/admin/workflows", async (c) => {
   const conditionField = String(body.condition_field ?? "").trim();
   const conditionJson = conditionField ? JSON.stringify([{ field: conditionField, operator: String(body.condition_operator ?? "equals"), value: String(body.condition_value ?? "") }]) : "[]";
   const actionType = String(body.action_type ?? "notify");
-  const action = actionType === "webhook" ? { type: "webhook", url: String(body.action_url ?? "").trim() } : actionType === "email" || actionType === "notify" ? { type: actionType, value: String(body.action_url ?? "").trim() } : actionType === "add_tag" ? { type: "add_tag", value: String(body.action_value ?? "").trim() } : { type: "wait", delayMs: Math.max(0, Math.min(10000, Number(body.action_value ?? 0))) };
+  const action = actionType === "webhook" ? { type: "webhook", url: String(body.action_url ?? "").trim() } : actionType === "integration" ? { type: "integration", provider: ["webhook", "slack", "discord", "airtable", "google_sheets"].includes(String(body.integration_provider)) ? String(body.integration_provider) : "webhook", url: String(body.action_url ?? "").trim(), mapping: {} } : actionType === "email" || actionType === "notify" ? { type: actionType, value: String(body.action_url ?? "").trim() } : actionType === "add_tag" ? { type: "add_tag", value: String(body.action_value ?? "").trim() } : { type: "wait", delayMs: Math.max(0, Math.min(10000, Number(body.action_value ?? 0))) };
   await createWorkflow(c.env.DB, { formId, name, trigger: String(body.trigger ?? "submission.completed"), conditionJson, actionsJson: JSON.stringify([action]) });
   await audit(c.env.DB, "workflow.created", formId ?? "", name);
   return c.redirect("/admin/workflows?msg=Workflow+created");
@@ -1075,6 +1170,20 @@ app.post("/admin/workflows/:id/delete", async (c) => {
   await deleteWorkflow(c.env.DB, id);
   await audit(c.env.DB, "workflow.deleted", id, "deleted");
   return c.redirect("/admin/workflows?msg=Workflow+deleted");
+});
+
+app.post("/admin/workflows/:id/replay", async (c) => {
+  const workflow = await getWorkflow(c.env.DB, c.req.param("id"));
+  const body = await c.req.parseBody();
+  const submissionId = Number(body.submission_id);
+  const submission = Number.isInteger(submissionId) ? await getSubmission(c.env.DB, submissionId) : null;
+  const form = submission ? await getForm(c.env.DB, workflow?.form_id || submission.form_id) : null;
+  if (!workflow || !submission || !form) return c.redirect("/admin/workflows?msg=Replay+target+not+found");
+  let data: Record<string, string> = {};
+  try { const parsed = JSON.parse(submission.data) as Record<string, unknown>; data = Object.fromEntries(Object.entries(parsed).map(([key, value]) => [key, Array.isArray(value) ? value.map(String).join(", ") : String(value ?? "")])); } catch { return c.redirect("/admin/workflows?msg=Replay+data+invalid"); }
+  c.executionCtx.waitUntil(executeWorkflow(c.env, workflow, form, submission.id, data));
+  await audit(c.env.DB, "workflow.replayed", workflow.id, `submission ${submission.id}`);
+  return c.redirect("/admin/workflows?msg=Workflow+replay+queued");
 });
 
 app.get("/admin/notifications", async (c) => {
@@ -1139,13 +1248,15 @@ app.get("/admin/settings", async (c) => {
   const section = (SECTIONS_KEYS as readonly string[]).includes(sectionParam ?? "")
     ? (sectionParam as SettingsSection)
     : "general";
-  const [stats, forms, retentionDays, apiKeys] = await Promise.all([
+  const [stats, forms, retentionDays, apiKeys, members] = await Promise.all([
     getDashboardStats(c.env.DB),
     listForms(c.env.DB),
     getSetting(c.env.DB, "retention_days"),
     listApiKeys(c.env.DB),
+    listWorkspaceMembers(c.env.DB),
   ]);
   const createdKey = url.searchParams.get("createdKey") || undefined;
+  const inviteUrl = url.searchParams.get("invite") || undefined;
   return c.html(
     <SettingsPage
       path={url.pathname}
@@ -1156,12 +1267,31 @@ app.get("/admin/settings", async (c) => {
       retentionDays={retentionDays}
       apiKeys={apiKeys}
       createdKey={createdKey}
+      members={members}
+      inviteUrl={inviteUrl}
       toastMsg={msgFrom(c)}
       commands={baseCommands(originOf(c.req.url))}
       formCount={stats.form_count}
       submissionCount={stats.submission_count}
     />
   );
+});
+
+app.post("/admin/settings/members/invite", async (c) => {
+  const body = await c.req.parseBody();
+  const email = String(body.email ?? "").trim().toLowerCase();
+  const role = body.role === "viewer" ? "viewer" : "editor";
+  if (!/^\S+@\S+\.\S+$/.test(email)) return c.redirect("/admin/settings?section=members&msg=Valid+email+required");
+  const token = newResumeToken();
+  await createInvitation(c.env.DB, email, role, await sha256Hex(token), Date.now() + 7 * 24 * 60 * 60 * 1000);
+  await audit(c.env.DB, "membership.invited", email, role);
+  return c.redirect(`/admin/settings?section=members&invite=${encodeURIComponent(`${originOf(c.req.url)}/invite/${token}`)}&msg=Invitation+created`);
+});
+
+app.post("/admin/settings/members/:id/remove", async (c) => {
+  await deleteMembership(c.env.DB, c.req.param("id"));
+  await audit(c.env.DB, "membership.removed", c.req.param("id"), "removed");
+  return c.redirect("/admin/settings?section=members&msg=Member+removed");
 });
 
 app.post("/admin/api-keys", async (c) => {

@@ -36,20 +36,20 @@ Legend — **DONE** = UI works + backend works + data persists + errors handled 
 | Audit log (form/key/response actions) | PARTIAL | 3 | — | cover webhook/integration actions | P2 | schema | partial |
 | Templates (preset schemas) | DONE | 4 | Tally | — | P1 | schema | smoke ✅ |
 | Webhook HMAC secret rotation / reveal | PARTIAL | 3 | Formspree | — | P2 | — | manual |
-| Workspace multi-tenant (members/roles) | NOT IMPLEMENTED | — | Typeform | full RBAC | P1 | users table | — |
-| Invitations | NOT IMPLEMENTED | — | Typeform | invite flow | P1 | memberships | — |
+| Workspace multi-tenant (members/roles) | PARTIAL | 4 | Typeform | full query-level workspace isolation and owner role enforcement | P1 | users/memberships | smoke ✅ |
+| Invitations | DONE | 4 | Typeform | email delivery and invite revocation UI | P1 | memberships | smoke ✅ |
 | Conditional logic engine | PARTIAL | 3 | Typeform | multi-condition UI, richer validation | P1 | schema v2 | smoke ✅ |
 | Logic simulator / map view | NOT IMPLEMENTED | — | Typeform | — | P2 | logic | — |
 | Calculations & variables | PARTIAL | 3 | Fillout | client recalculation and richer types | P1 | schema v2 | typecheck ✅ |
 | Answer piping (`{{value}}`) | DONE | 3 | Typeform | — | P1 | schema v2 | smoke ✅ |
 | Multi-page / page-break forms | DONE | 3 | Typeform | — | P1 | schema v2 | smoke ✅ |
-| Conversational (one-question-at-a-time) | NOT IMPLEMENTED | — | Typeform | — | P1 | schema v2 | — |
+| Conversational (one-question-at-a-time) | DONE | 4 | Typeform | keyboard-focused next-step validation | P1 | schema v2 | typecheck ✅ |
 | Partial responses / autosave | PARTIAL | 3 | Typeform | server-side validation during autosave | P1 | sessions | smoke ✅ |
 | Save & resume (continue later) | DONE | 3 | Typeform | — | P1 | sessions | smoke ✅ |
 | Prefill via URL params | DONE | 3 | Typeform | — | P1 | schema v2 | smoke ✅ |
-| Multiple endings / conditional endings | NOT IMPLEMENTED | — | Typeform | — | P1 | schema v2 | — |
+| Multiple endings / conditional endings | DONE | 4 | Typeform | conditional-ending editor with condition groups | P1 | schema v2 | typecheck ✅ |
 | Repeating sections / subforms | NOT IMPLEMENTED | — | Jotform | — | P2 | schema v2 | — |
-| Skip logic / disqualification | NOT IMPLEMENTED | — | Typeform | — | P1 | logic | — |
+| Skip logic / disqualification | PARTIAL | 4 | Typeform | richer page skipping and disqualified analytics | P1 | logic | typecheck ✅ |
 | Custom themes / branding | DONE | 3 | Tally | font selector and hosted asset picker | P1 | schema | smoke ✅ |
 | Multilingual forms (no clone) | NOT IMPLEMENTED | — | Typeform | translation layer over IDs | P2 | schema v2 | — |
 | Randomization / question pools | NOT IMPLEMENTED | — | SurveyMonkey | — | P2 | schema v2 | — |
@@ -57,24 +57,24 @@ Legend — **DONE** = UI works + backend works + data persists + errors handled 
 | Payments (Stripe-style provider) | NOT IMPLEMENTED | — | Jotform | provider abstraction | P1 | — | — |
 | E-signatures | NOT IMPLEMENTED | — | Cognito | — | P2 | — | — |
 | Appointments / booking fields | NOT IMPLEMENTED | — | Jotform | availability + calendars | P2 | — | — |
-| Workflows automation engine | PARTIAL | 3 | Jotform | multi-step editor, manual retry/replay UI | P1 | schema v2 | smoke ✅ |
+| Workflows automation engine | DONE | 4 | Jotform | multi-step visual editor and durable queued jobs | P1 | schema v2 | typecheck ✅ |
 | Approvals | NOT IMPLEMENTED | — | Formstack | — | P2 | workflow | — |
-| Integrations (Sheets/Airtable/Slack/Terminal) | NOT IMPLEMENTED | — | Jotform | providers + field mapping | P1 | — | — |
-| Embedding (iframe/JS API/popup) | PARTIAL | 3 | Typeform | documented JS callbacks and popup helper | P1 | schema v2 | smoke ✅ |
+| Integrations (Sheets/Airtable/Slack/Terminal) | PARTIAL | 4 | Jotform | OAuth credential vault, native record updates, Terminal app | P1 | workflow | typecheck ✅ |
+| Embedding (iframe/JS API/popup) | DONE | 4 | Typeform | postMessage origin allowlist and hosted SDK docs | P1 | schema v2 | typecheck ✅ |
 | Custom domains | NOT IMPLEMENTED | — | Typeform | hostname→form map | P2 | — | — |
 | Form sharing/public URL + slug | DONE | 4 | Tally | — | P1 | schema | smoke ✅ |
 | QR codes, closed dates, submission limits | PARTIAL | 3 | Typeform | QR rendering | P2 | schema | smoke ✅ |
 | PDF / document generation | NOT IMPLEMENTED | — | Formstack | template engine | P2 | — | — |
-| XLSX / JSON export | PARTIAL | 3 | Jotform | JSON via API only | P2 | — | — |
+| XLSX / JSON export | PARTIAL | 4 | Jotform | XLSX export and streamed large exports | P2 | — | typecheck ✅ |
 | Global search (forms/subs) | PARTIAL | 2 | Jotform | form name search only | P1 | — | partial |
-| Add-custom tags / notes / status on responses | NOT IMPLEMENTED | — | Jotform | — | P2 | schema | — |
+| Add-custom tags / notes / status on responses | DONE | 4 | Jotform | saved views and bulk editing | P2 | schema | typecheck ✅ |
 | Saved views / bulk select / bulk actions | NOT IMPLEMENTED | — | Jotform | — | P2 | — | — |
-| Response editing | NOT IMPLEMENTED | — | Jotform | audit trail | P2 | — | — |
-| Form health check (pre-publish) | NOT IMPLEMENTED | — | — | validator | P2 | schema | — |
-| Notifications center (in-app) | NOT IMPLEMENTED | — | Jotform | — | P2 | — | — |
+| Response editing | PARTIAL | 4 | Jotform | field-value editing with full revision snapshots | P2 | schema | typecheck ✅ |
+| Form health check (pre-publish) | DONE | 4 | — | deeper accessibility scan | P2 | schema | smoke ✅ |
+| Notifications center (in-app) | DONE | 4 | Jotform | per-user notification preferences | P2 | notifications | smoke ✅ |
 | Version history restore | PARTIAL | 2 | Typeform | snapshots UI | P2 | schema | none |
 | AI features (prompt→form, suggestions) | NOT IMPLEMENTED | — | Fillout | provider-agnostic AI | P2 | — | — |
 | Offline collection (PWA) | NOT IMPLEMENTED | — | — | — | P2 | — | — |
 | Rate limit (API keys) | PARTIAL | 3 | — | cross-isolate (DO/KV) | P2 | Durable Object | — |
-| CSRF protections | PARTIAL | 3 | — | audit + tokens | P0 | — | — |
+| CSRF protections | PARTIAL | 4 | — | nonce tokens on every authenticated form | P0 | — | typecheck ✅ |
 | XSS hardening | PARTIAL | 4 | — | JSX auto-escape ✅; review raw `dangerouslySetInnerHTML` | P0 | — | manual |

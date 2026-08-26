@@ -94,6 +94,14 @@ export const SubmissionDetailPage: FC<{
               </div>
             ))}
           </div>
+          <h2 class="section-title mt16">Response management</h2>
+          <form method="post" action={`/admin/submissions/${sub.id}/meta`} class="card card-b">
+            <input type="hidden" name="back" value={backHref} />
+            <div class="field"><label for="response-status">Status</label><select class="select" id="response-status" name="status"><option value="completed" selected={sub.status === "completed" || !sub.status}>Completed</option><option value="partial" selected={sub.status === "partial"}>Partial</option><option value="abandoned" selected={sub.status === "abandoned"}>Abandoned</option><option value="spam" selected={sub.status === "spam" || !!sub.is_spam}>Spam</option></select></div>
+            <div class="field"><label for="response-tags">Tags</label><input class="input" id="response-tags" name="tags" value={(() => { try { const parsed = JSON.parse(sub.tags_json ?? "[]"); return Array.isArray(parsed) ? parsed.join(", ") : ""; } catch { return ""; } })()} placeholder="lead, follow-up" /></div>
+            <div class="field"><label for="response-note">Internal note</label><textarea class="textarea" id="response-note" name="note" rows={4} placeholder="Private note for the team">{sub.note ?? ""}</textarea></div>
+            <Button variant="primary" type="submit">Save response</Button>
+          </form>
           {sub.is_spam ? (
             <div class="callout mt16">
               <IconAlert size={15} />

@@ -19,6 +19,47 @@
 -- ALTER TABLE submissions ADD COLUMN completed_at INTEGER;
 -- ALTER TABLE submissions ADD COLUMN updated_at INTEGER;
 
+CREATE TABLE IF NOT EXISTS workspaces (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS memberships (
+  user_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('owner', 'editor', 'viewer')),
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, workspace_id)
+);
+
+CREATE TABLE IF NOT EXISTS invitations (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  email TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('editor', 'viewer')),
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at INTEGER NOT NULL,
+  accepted_at INTEGER,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS admin_sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS forms (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -37,7 +78,8 @@ CREATE TABLE IF NOT EXISTS forms (
   close_at INTEGER,
   submission_limit INTEGER,
   closed_message TEXT NOT NULL DEFAULT '',
-  one_per_respondent INTEGER NOT NULL DEFAULT 0
+  one_per_respondent INTEGER NOT NULL DEFAULT 0,
+  workspace_id TEXT NOT NULL DEFAULT 'ws_default'
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_forms_slug ON forms (slug) WHERE slug IS NOT NULL AND slug != '';
@@ -56,7 +98,9 @@ CREATE TABLE IF NOT EXISTS submissions (
   resume_expires_at INTEGER,
   resume_revoked INTEGER NOT NULL DEFAULT 0,
   completed_at INTEGER,
-  updated_at INTEGER
+  updated_at INTEGER,
+  tags_json TEXT NOT NULL DEFAULT '[]',
+  note TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_submissions_form ON submissions (form_id, created_at DESC);

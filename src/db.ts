@@ -1,7 +1,7 @@
 import {
   FormRow, FormWithStats, SubmissionRow, SubmissionWithContext,
   WebhookRow, WebhookWithContext, DeliveryRow, DashboardStats,
-  ApiKeyRow, WorkflowRow, WorkflowRunRow, WorkflowStepRow,
+  ApiKeyRow, WorkflowRow, WorkflowRunRow, WorkflowStepRow, UserRow, MembershipRow, InvitationRow,
 } from "./types";
 
 const ALPHABET = "abcdefghijkmnopqrstuvwxyz23456789";
@@ -571,4 +571,60 @@ export async function listNotifications(db: D1Database): Promise<import("./types
 
 export async function markNotificationsRead(db: D1Database): Promise<void> {
   await db.prepare("UPDATE notifications SET read_at = ? WHERE read_at IS NULL").bind(Date.now()).run();
+}
+
+/* ================= workspace users ================= */
+
+export async function ensureBootstrapOwner(db: D1Database, email: string, passwordHash: string, name: string, workspaceName: string): Promise<UserRow> {
+  const existing = await db.prepare("SELECT * FROM users WHERE email = ?").bind(email).first<UserRow>();
+  const workspace = await db.prepare("SELECT id FROM workspaces WHERE id = 'ws_default'").first<{ id: string }>();
+  if (!workspace) await db.prepare("INSERT INTO workspaces (id, name, created_at) VALUES ('ws_default', ?, ?)").bind(workspaceName, Date.now()).run();
+  if (existing) {
+    await db.prepare("INSERT OR IGNORE INTO memberships (user_id, workspace_id, role, created_at) VALUES (?, 'ws_default', 'owner', ?)").bind(existing.id, Date.now()).run();
+    return existing;
+  }
+  const user: UserRow = { id: `usr_${randomId(12)}`, email, name, password_hash: passwordHash, created_at: Date.now() };
+  await db.prepare("INSERT INTO users (id, email, name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)").bind(user.id, user.email, user.name, user.password_hash, user.created_at).run();
+  await db.prepare("INSERT INTO memberships (user_id, workspace_id, role, created_at) VALUES (?, 'ws_default', 'owner', ?)").bind(user.id, Date.now()).run();
+  return user;
+}
+
+export async function getUserByEmail(db: D1Database, email: string): Promise<UserRow | null> {
+  return await db.prepare("SELECT * FROM users WHERE lower(email) = lower(?)").bind(email).first<UserRow>();
+}
+
+export async function listWorkspaceMembers(db: D1Database, workspaceId = "ws_default"): Promise<(UserRow & { role: string })[]> {
+  const { results } = await db.prepare("SELECT u.*, m.role FROM users u JOIN memberships m ON m.user_id = u.id WHERE m.workspace_id = ? ORDER BY u.created_at").bind(workspaceId).all<UserRow & { role: string }>();
+  return results ?? [];
+}
+
+export async function createInvitation(db: D1Database, email: string, role: "editor" | "viewer", tokenHash: string, expiresAt: number, workspaceId = "ws_default"): Promise<InvitationRow> {
+  const row: InvitationRow = { id: `inv_${randomId(12)}`, workspace_id: workspaceId, email, role, token_hash: tokenHash, expires_at: expiresAt, accepted_at: null, created_at: Date.now() };
+  await db.prepare("INSERT INTO invitations (id, workspace_id, email, role, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(row.id, row.workspace_id, row.email, row.role, row.token_hash, row.expires_at, row.created_at).run();
+  return row;
+}
+
+export async function getInvitationByHash(db: D1Database, tokenHash: string): Promise<InvitationRow | null> {
+  return await db.prepare("SELECT * FROM invitations WHERE token_hash = ? AND accepted_at IS NULL AND expires_at > ?").bind(tokenHash, Date.now()).first<InvitationRow>();
+}
+
+export async function acceptInvitation(db: D1Database, invitation: InvitationRow, name: string, passwordHash: string): Promise<UserRow> {
+  const existing = await getUserByEmail(db, invitation.email);
+  const user = existing ?? { id: `usr_${randomId(12)}`, email: invitation.email, name, password_hash: passwordHash, created_at: Date.now() };
+  if (!existing) await db.prepare("INSERT INTO users (id, email, name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)").bind(user.id, user.email, user.name, user.password_hash, user.created_at).run();
+  await db.prepare("INSERT OR REPLACE INTO memberships (user_id, workspace_id, role, created_at) VALUES (?, ?, ?, ?)").bind(user.id, invitation.workspace_id, invitation.role, Date.now()).run();
+  await db.prepare("UPDATE invitations SET accepted_at = ? WHERE id = ? AND accepted_at IS NULL").bind(Date.now(), invitation.id).run();
+  return user;
+}
+
+export async function deleteMembership(db: D1Database, userId: string, workspaceId = "ws_default"): Promise<void> {
+  await db.prepare("DELETE FROM memberships WHERE user_id = ? AND workspace_id = ? AND role != 'owner'").bind(userId, workspaceId).run();
+}
+
+export async function getMembership(db: D1Database, userId: string, workspaceId: string): Promise<MembershipRow | null> {
+  return await db.prepare("SELECT * FROM memberships WHERE user_id = ? AND workspace_id = ?").bind(userId, workspaceId).first<MembershipRow>();
+}
+
+export async function updateSubmissionMeta(db: D1Database, id: number, fields: { status: string; tagsJson: string; note: string }): Promise<void> {
+  await db.prepare("UPDATE submissions SET status = ?, tags_json = ?, note = ?, updated_at = ? WHERE id = ?").bind(fields.status, fields.tagsJson, fields.note.slice(0, 4000), Date.now(), id).run();
 }

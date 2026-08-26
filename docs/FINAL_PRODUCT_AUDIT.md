@@ -7,7 +7,7 @@
 
 ## Executive summary
 
-FormRelay now supports a backward-compatible schema-v2 visual-form contract while preserving schema-v1 and headless submission behavior. The shipped implementation adds a pure conditional-logic evaluator, safe calculation expressions, typed variables, answer piping, multi-page rendering, URL prefill, autosave, expiring anonymous resume tokens, template-backed form creation, validated public slugs, availability controls, theming, responsive iframe embedding, persisted rule-based workflows, asynchronous workflow execution, run and step history, and an in-app notification center.
+FormRelay now supports a backward-compatible schema-v2 visual-form contract while preserving schema-v1 and headless submission behavior. The shipped implementation adds a pure conditional-logic evaluator, safe calculation expressions, typed variables, answer piping, multi-page and conversational rendering, URL prefill, autosave, expiring anonymous resume tokens, template-backed form creation, validated public slugs, availability controls, theming, responsive iframe embedding plus a callback/popup SDK, persisted rule-based workflows, asynchronous workflow execution, bounded retries, run and step history, provider-adapter integrations, an in-app notification center, workspace users, invitations, viewer read-only enforcement, and response tags/notes/status editing.
 
 The implementation deliberately keeps the existing modular Worker architecture: D1 remains the source of truth, R2 remains optional for uploads and large payload spillover, and non-critical email, webhook, workflow, upload, and notification side effects remain behind `waitUntil` after response persistence. The feature matrix has been updated so partial and unimplemented areas are not represented as complete.
 
@@ -24,13 +24,13 @@ The implementation deliberately keeps the existing modular Worker architecture: 
 | Templates | Contact, feedback, job application, RSVP, NPS, project request, registration, consent, and blank presets | New draft `schema_json` | Authenticated creation smoke |
 | Sharing | Human slug route, open/close dates, custom closed message, submission limit, one-per-browser cookie | Form columns | Share-route smoke |
 | Themes | Sanitized HTTP(S) logo/cover URLs, colors, radius, and renderer CSS variables; no arbitrary custom CSS | `theme_json` | Settings route and public renderer |
-| Workflows | Form-scoped or global workflow definitions, trigger conditions, notification/email/webhook/tag/wait actions, retries, run/step history, pause/resume/delete UI | `workflows`, `workflow_runs`, `workflow_steps` | Workflow creation and management smoke |
+| Workflows | Form-scoped or global workflow definitions, trigger conditions, notification/email/webhook/tag/wait/integration actions, retries, run/step history, pause/resume/delete/replay UI | `workflows`, `workflow_runs`, `workflow_steps` | Workflow creation and management smoke |
 | Notifications | New completed submission and failed workflow notifications, list view, mark-all-read action | `notifications` | Route and migration verified by typecheck; runtime smoke pending final local reset |
 | Form health | Pre-publish checks for missing labels, schema references, invalid redirects, empty schemas, and missing email provider configuration | Derived from form/schema | `/admin/forms/:id/health` route |
 
 ## Migrations
 
-The bootstrap schema in `schema.sql` contains the complete current shape. Existing installations must apply `migrations/0002-smart-forms-workflows.sql` once. It adds form sharing and theme columns, response lifecycle and resume columns, workflow definitions and execution history, and notification storage. The migration is intentionally a one-time upgrade because SQLite `ALTER TABLE ... ADD COLUMN` statements are not idempotent when a column already exists.
+The bootstrap schema in `schema.sql` contains the complete current shape. Existing installations must apply `migrations/0002-smart-forms-workflows.sql` once. It adds form sharing and theme columns, response lifecycle and resume columns, workflow definitions and execution history, notification storage, and workspace membership tables. The migration is intentionally a one-time upgrade because SQLite `ALTER TABLE ... ADD COLUMN` statements are not idempotent when a column already exists.
 
 The primary response invariant is preserved:
 
@@ -42,7 +42,7 @@ A completed response is stored with `status = 'completed'`; spam is stored with 
 
 The implementation preserves JSX auto-escaping for ordinary user content, rejects unsafe theme asset protocols, limits theme text and closed-message lengths, hashes resume tokens before D1 storage, expires resume tokens, and never evaluates user expressions through `eval`, `Function`, or equivalent dynamic code execution. Workflow webhook URLs are restricted to HTTP(S), and workflow actions are bounded to two attempts with an eight-second outbound request timeout.
 
-The existing deployment still uses the project’s bootstrap password plus HMAC session cookie. Workspace-level multi-tenancy, per-user sessions, invitation management, and query-level workspace isolation are **not shipped** and remain explicitly unimplemented in `FEATURE_MATRIX.md`. CSRF hardening and webhook secret rotation also remain follow-up work. Administrators should deploy behind HTTPS, rotate `SESSION_SECRET`, use a strong `ADMIN_PASSWORD`, keep `.dev.vars` out of source control, and configure Cloudflare secret storage for production credentials.
+The deployment now supports per-user signed sessions, workspace memberships, single-use hashed invitations, owner-only member management, and viewer read-only enforcement. Query-level workspace isolation is still incomplete because legacy D1 helpers default to the bootstrap workspace; it remains explicitly marked partial in `FEATURE_MATRIX.md`. CSRF hardening beyond same-origin checks and webhook secret rotation remain follow-up work. Administrators should deploy behind HTTPS, rotate `SESSION_SECRET`, use a strong `ADMIN_PASSWORD`, keep `.dev.vars` out of source control, and configure Cloudflare secret storage for production credentials.
 
 ## Performance and reliability
 
@@ -79,7 +79,7 @@ npm test
 npm run typecheck
 ```
 
-The native test suite contains three passing tests covering comparison and multi-value conditions, AST calculation safety, action application, answer piping, and invalid publish-time references. The HTTP smoke flow passed for landing page, login, authenticated form creation from the Contact template, builder rendering, public rendering, publish, slug redirect, workflow creation, and workflow management page rendering.
+The native test suite contains four passing tests covering comparison and multi-value conditions, AST calculation safety, action application, answer piping, conditional endings/disqualification, and invalid publish-time references. The HTTP smoke flow passed for landing page, login, authenticated form creation from the Contact template, builder rendering, public rendering, publish, slug redirect, workflow creation, and workflow management page rendering.
 
 The repository was pushed to `main` in the following feature commits:
 
@@ -89,9 +89,10 @@ The repository was pushed to `main` in the following feature commits:
 | `f151071` | Persisted workflow automation and management UI |
 | `fdda3d7` | Migration, documentation, and form health checks |
 | `e469f11` | In-app notification center |
+| `working tree` | RBAC, provider adapters, advanced endings, embeds, replay, and response management |
 
 ## Remaining work
 
-The following capabilities remain partial or unimplemented and are intentionally not described as shipped: full team/workspace RBAC and isolation proofs; invitation and ownership transfer flows; multi-condition builder editing beyond the first condition/action row; conditional endings and disqualification; repeating subforms; complete conversational mode; full provider adapters and mapped update-record integrations; manual workflow retry/replay UI; QR rendering; popup and callback embed SDK; payments; PDF generation; custom domains; AI assistance; logic simulator; cross-isolate API rate limiting; CSRF protections; response tags/notes/status editing; and advanced enterprise scheduling.
+The following capabilities remain partial or unimplemented and are intentionally not described as shipped: query-level workspace isolation proofs and ownership transfer; multi-condition builder editing beyond the first condition/action row; repeating subforms; richer client-side calculation updates; provider OAuth credential vaults and native record updates; QR rendering; payments; PDF generation; custom domains; AI assistance; logic simulator; cross-isolate API rate limiting; full CSRF token coverage; saved views and bulk actions; and advanced enterprise scheduling.
 
 These limitations are also reflected in `docs/FEATURE_MATRIX.md` and should be resolved before presenting FormRelay as feature-complete parity with Typeform, Tally, or Jotform.
