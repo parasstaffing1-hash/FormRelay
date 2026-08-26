@@ -8,7 +8,8 @@
     "db:create": "wrangler d1 create formrelay",
     "db:init": "wrangler d1 execute formrelay --local --file=./schema.sql",
     "db:init:remote": "wrangler d1 execute formrelay --remote --file=./schema.sql",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "rm -rf .test-build && tsc --target ES2022 --module CommonJS --moduleResolution Node --jsx react-jsx --jsxImportSource hono/jsx --skipLibCheck --outDir .test-build src/blocks.ts src/logic.ts && node --test tests/logic.test.cjs"
   },
   "dependencies": {
     "hono": "^4.6.14"
