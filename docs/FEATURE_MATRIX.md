@@ -68,11 +68,11 @@ Legend — **DONE** = UI works + backend works + data persists + errors handled 
 | XLSX / JSON export | PARTIAL | 4 | Jotform | XLSX export and streamed large exports | P2 | — | typecheck ✅ |
 | Global search (forms/subs) | PARTIAL | 2 | Jotform | form name search only | P1 | — | partial |
 | Add-custom tags / notes / status on responses | DONE | 4 | Jotform | saved views and bulk editing | P2 | schema | typecheck ✅ |
-| Saved views / bulk select / bulk actions | NOT IMPLEMENTED | — | Jotform | — | P2 | — | — |
+| Saved views / bulk select / bulk actions | PARTIAL | 5 | Jotform | persisted saved views and cross-page bulk selection | P2 | submissions | typecheck ✅ |
 | Response editing | PARTIAL | 4 | Jotform | field-value editing with full revision snapshots | P2 | schema | typecheck ✅ |
 | Form health check (pre-publish) | DONE | 4 | — | deeper accessibility scan | P2 | schema | smoke ✅ |
 | Notifications center (in-app) | DONE | 4 | Jotform | per-user notification preferences | P2 | notifications | smoke ✅ |
-| Version history restore | PARTIAL | 2 | Typeform | snapshots UI | P2 | schema | none |
+| Version history restore | DONE | 5 | Typeform | diff view and named releases | P2 | form_versions | typecheck ✅ |
 | AI features (prompt→form, suggestions) | NOT IMPLEMENTED | — | Fillout | provider-agnostic AI | P2 | — | — |
 | Offline collection (PWA) | NOT IMPLEMENTED | — | — | — | P2 | — | — |
 | Rate limit (API keys) | PARTIAL | 3 | — | cross-isolate (DO/KV) | P2 | Durable Object | — |

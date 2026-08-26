@@ -52,6 +52,7 @@ export const BuilderPage: FC<Props> = ({ form, schema, origin: _origin, toastMsg
           <div class="flex gap8">
             <a class="btn btn-secondary btn-sm" href={`/f/${form.id}`} target="_blank" rel="noreferrer">Preview</a>
             <a class="btn btn-secondary btn-sm" href={`/admin/forms/${form.id}/health`}>Health check</a>
+            <a class="btn btn-secondary btn-sm" href={`/admin/forms/${form.id}/versions`}>History</a>
             {form.status === "published" ? (
               <form method="post" action={`/admin/forms/${form.id}/unpublish`} style="display:inline">
                 <button type="submit" class="btn btn-secondary btn-sm">Unpublish</button>

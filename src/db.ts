@@ -628,3 +628,24 @@ export async function getMembership(db: D1Database, userId: string, workspaceId:
 export async function updateSubmissionMeta(db: D1Database, id: number, fields: { status: string; tagsJson: string; note: string }): Promise<void> {
   await db.prepare("UPDATE submissions SET status = ?, tags_json = ?, note = ?, updated_at = ? WHERE id = ?").bind(fields.status, fields.tagsJson, fields.note.slice(0, 4000), Date.now(), id).run();
 }
+
+export async function createFormVersion(db: D1Database, formId: string, schemaJson: string, publishedJson: string | null, createdBy = "system"): Promise<number | null> {
+  const result = await db.prepare("INSERT INTO form_versions (form_id, schema_json, published_json, created_at, created_by) VALUES (?, ?, ?, ?, ?)").bind(formId, schemaJson, publishedJson, Date.now(), createdBy).run();
+  return result.meta.last_row_id ?? null;
+}
+
+export async function listFormVersions(db: D1Database, formId: string, limit = 25): Promise<import("./types").FormVersionRow[]> {
+  const { results } = await db.prepare("SELECT * FROM form_versions WHERE form_id = ? ORDER BY created_at DESC LIMIT ?").bind(formId, Math.min(100, Math.max(1, limit))).all<import("./types").FormVersionRow>();
+  return results ?? [];
+}
+
+export async function getFormVersion(db: D1Database, id: number): Promise<import("./types").FormVersionRow | null> {
+  return await db.prepare("SELECT * FROM form_versions WHERE id = ?").bind(id).first<import("./types").FormVersionRow>();
+}
+
+export async function restoreFormVersion(db: D1Database, formId: string, versionId: number): Promise<boolean> {
+  const version = await getFormVersion(db, versionId);
+  if (!version || version.form_id !== formId) return false;
+  await db.prepare("UPDATE forms SET schema_json = ?, published_json = ?, status = CASE WHEN ? IS NULL THEN 'draft' ELSE 'published' END WHERE id = ?").bind(version.schema_json, version.published_json ?? null, version.published_json ?? null, formId).run();
+  return true;
+}

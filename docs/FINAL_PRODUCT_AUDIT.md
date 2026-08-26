@@ -7,7 +7,7 @@
 
 ## Executive summary
 
-FormRelay now supports a backward-compatible schema-v2 visual-form contract while preserving schema-v1 and headless submission behavior. The shipped implementation adds a pure conditional-logic evaluator, safe calculation expressions, typed variables, answer piping, multi-page and conversational rendering, URL prefill, autosave, expiring anonymous resume tokens, template-backed form creation, validated public slugs, availability controls, theming, responsive iframe embedding plus a callback/popup SDK, persisted rule-based workflows, asynchronous workflow execution, bounded retries, run and step history, provider-adapter integrations, an in-app notification center, workspace users, invitations, viewer read-only enforcement, and response tags/notes/status editing.
+FormRelay now supports a backward-compatible schema-v2 visual-form contract while preserving schema-v1 and headless submission behavior. The shipped implementation adds a pure conditional-logic evaluator, safe calculation expressions, typed variables, answer piping, multi-page and conversational rendering, URL prefill, autosave, expiring anonymous resume tokens, template-backed form creation, validated public slugs, availability controls, theming, responsive iframe embedding plus a callback/popup SDK, persisted rule-based workflows, asynchronous workflow execution, bounded retries, run and step history, provider-adapter integrations, an in-app notification center, workspace users, invitations, viewer read-only enforcement, response tags/notes/status editing, bulk response operations, version snapshots with restore, and server-side upload type/size validation.
 
 The implementation deliberately keeps the existing modular Worker architecture: D1 remains the source of truth, R2 remains optional for uploads and large payload spillover, and non-critical email, webhook, workflow, upload, and notification side effects remain behind `waitUntil` after response persistence. The feature matrix has been updated so partial and unimplemented areas are not represented as complete.
 
@@ -26,7 +26,7 @@ The implementation deliberately keeps the existing modular Worker architecture: 
 | Themes | Sanitized HTTP(S) logo/cover URLs, colors, radius, and renderer CSS variables; no arbitrary custom CSS | `theme_json` | Settings route and public renderer |
 | Workflows | Form-scoped or global workflow definitions, trigger conditions, notification/email/webhook/tag/wait/integration actions, retries, run/step history, pause/resume/delete/replay UI | `workflows`, `workflow_runs`, `workflow_steps` | Workflow creation and management smoke |
 | Notifications | New completed submission and failed workflow notifications, list view, mark-all-read action | `notifications` | Route and migration verified by typecheck; runtime smoke pending final local reset |
-| Form health | Pre-publish checks for missing labels, schema references, invalid redirects, empty schemas, and missing email provider configuration | Derived from form/schema | `/admin/forms/:id/health` route |
+| Form health | Pre-publish checks for missing labels, schema references, invalid redirects, empty schemas, missing email provider configuration, and upload constraints | Derived from form/schema | `/admin/forms/:id/health` route |
 
 ## Migrations
 
@@ -94,6 +94,6 @@ The repository was pushed to `main` in the following feature commits:
 
 ## Remaining work
 
-The following capabilities remain partial or unimplemented and are intentionally not described as shipped: query-level workspace isolation proofs and ownership transfer; multi-condition builder editing beyond the first condition/action row; repeating subforms; richer client-side calculation updates; provider OAuth credential vaults and native record updates; QR rendering; payments; PDF generation; custom domains; AI assistance; logic simulator; cross-isolate API rate limiting; full CSRF token coverage; saved views and bulk actions; and advanced enterprise scheduling.
+The following capabilities remain partial or unimplemented and are intentionally not described as shipped: query-level workspace isolation proofs and ownership transfer; multi-condition builder editing beyond the first condition/action row; repeating subforms; richer client-side calculation updates; provider OAuth credential vaults and native record updates; QR rendering; payments; PDF generation; custom domains; AI assistance; logic simulator; cross-isolate API rate limiting; full CSRF token coverage; saved views across pages; and advanced enterprise scheduling.
 
 These limitations are also reflected in `docs/FEATURE_MATRIX.md` and should be resolved before presenting FormRelay as feature-complete parity with Typeform, Tally, or Jotform.

@@ -10,6 +10,10 @@ import {
   getForm,
   updateForm,
   updateFormSchema,
+  createFormVersion,
+  listFormVersions,
+  getFormVersion,
+  restoreFormVersion,
   publishForm,
   unpublishForm,
   incrementFormViews,
@@ -375,6 +379,18 @@ app.post("/f/:id", async (c) => {
         else raw = "";
       }
       const effectiveBlock = smartState?.required[block.id] !== undefined ? { ...block, required: smartState.required[block.id] } : block;
+      if (block.type === "file") {
+        const fieldFiles = uploads.filter((upload) => upload.fieldName === block.id).map((upload) => upload.file);
+        const accepted = (block.accept ?? "").split(",").map((item) => item.trim().toLowerCase()).filter(Boolean);
+        const invalidType = accepted.length > 0 && fieldFiles.some((file) => {
+          const name = file.name.toLowerCase();
+          const mime = (file.type || "application/octet-stream").toLowerCase();
+          return !accepted.some((rule) => rule.startsWith(".") ? name.endsWith(rule) : rule.endsWith("/*") ? mime.startsWith(rule.slice(0, -1)) : mime === rule);
+        });
+        const invalidSize = block.maxSize != null && fieldFiles.some((file) => file.size > Number(block.maxSize));
+        if (invalidType) errors[block.id] = "This file type is not allowed.";
+        else if (invalidSize) errors[block.id] = `Each file must be smaller than ${Math.round(Number(block.maxSize) / 1024 / 1024 * 10) / 10} MB.`;
+      }
       const err = validateBlockValue(effectiveBlock, raw);
       if (err) errors[block.id] = err;
       const cur = rawPayload[block.id];
@@ -760,6 +776,25 @@ app.get("/admin/forms/:id/health", async (c) => {
   return c.html(<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Health · {form.name}</title><style dangerouslySetInnerHTML={{ __html: CSS }} /></head><body style="font-family:system-ui;max-width:720px;margin:40px auto;padding:0 20px"><p><a href={`/admin/forms/${form.id}/build`}>← Back to builder</a></p><h1>Form health</h1><p>{form.name} · <strong>{tone}</strong></p><ul>{items.map((item) => <li style={`margin:8px 0;color:${item.level === "error" ? "#b42318" : item.level === "warning" ? "#9a6700" : "#18794e"}`}>{item.level.toUpperCase()}: {item.message}</li>)}</ul></body></html>);
 });
 
+app.get("/admin/forms/:id/versions", async (c) => {
+  const form = await getForm(c.env.DB, c.req.param("id"));
+  if (!form) return c.notFound();
+  const versions = await listFormVersions(c.env.DB, form.id, 50);
+  return c.html(<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Version history · {form.name}</title><style dangerouslySetInnerHTML={{ __html: CSS }} /></head><body style="font-family:system-ui;max-width:820px;margin:40px auto;padding:0 20px"><p><a href={`/admin/forms/${form.id}/build`}>← Back to builder</a></p><h1>Version history</h1><p class="muted">Saved schema snapshots for {form.name}. Restoring a version replaces the current draft and published copy.</p>{versions.length ? <div class="card card-b">{versions.map((version) => <div class="kv" style="align-items:center"><div><strong>Version {version.id}</strong><div class="muted small">{new Date(version.created_at).toISOString()} · {version.created_by}</div></div><form method="post" action={`/admin/forms/${form.id}/versions/${version.id}/restore`} onsubmit="return confirm('Restore this version?')"><button class="btn btn-secondary btn-sm" type="submit">Restore</button></form></div>)}</div> : <p>No snapshots yet. Saving the builder will create the first snapshot.</p>}</body></html>);
+});
+
+app.post("/admin/forms/:id/versions/:versionId/restore", async (c) => {
+  const id = c.req.param("id");
+  const versionId = Number(c.req.param("versionId"));
+  const form = await getForm(c.env.DB, id);
+  if (!form || !Number.isInteger(versionId)) return c.notFound();
+  await createFormVersion(c.env.DB, id, form.schema_json ?? "{}", form.published_json, "pre-restore");
+  const restored = await restoreFormVersion(c.env.DB, id, versionId);
+  if (!restored) return c.notFound();
+  await audit(c.env.DB, "form.version.restored", id, `version=${versionId}`);
+  return c.redirect(`/admin/forms/${id}/build?msg=${encodeURIComponent("Version restored")}`);
+});
+
 app.post("/admin/forms/:id/schema", async (c) => {
   const id = c.req.param("id");
   const form = await getForm(c.env.DB, id);
@@ -771,6 +806,7 @@ app.post("/admin/forms/:id/schema", async (c) => {
     return c.redirect(`/admin/forms/${id}/build?msg=${encodeURIComponent("Invalid schema JSON")}`);
   }
   const normalized = JSON.stringify(parsed);
+  await createFormVersion(c.env.DB, id, normalized, form.published_json, "admin");
   await updateFormSchema(c.env.DB, id, normalized);
   await audit(c.env.DB, "form.settings.updated", id, "schema saved");
   return c.redirect(`/admin/forms/${id}/build?msg=${encodeURIComponent("Schema saved")}`);
@@ -1048,6 +1084,28 @@ app.post("/admin/submissions/:id/meta", async (c) => {
   }
   const back = typeof body.back === "string" && body.back.startsWith("/") ? body.back : "/admin/submissions";
   return c.redirect(`${back}?msg=Response+updated`);
+});
+
+app.post("/admin/submissions/bulk", async (c) => {
+  const body = await c.req.parseBody();
+  const rawIds = body.id == null ? [] : Array.isArray(body.id) ? body.id : [body.id];
+  const ids = rawIds.map(Number).filter((id) => Number.isInteger(id) && id > 0).slice(0, 100);
+  const action = String(body.action ?? "completed");
+  const tag = String(body.tag ?? "").trim().toLowerCase().slice(0, 64);
+  for (const id of ids) {
+    const sub = await getSubmission(c.env.DB, id);
+    if (!sub) continue;
+    if (action === "delete") await deleteSubmission(c.env.DB, id);
+    else if (action === "tag" && tag) {
+      let tags: string[] = []; try { const parsed = JSON.parse(sub.tags_json ?? "[]"); if (Array.isArray(parsed)) tags = parsed.map(String); } catch { /* ignore malformed legacy metadata */ }
+      if (!tags.includes(tag)) tags.push(tag);
+      await updateSubmissionMeta(c.env.DB, id, { status: String(sub.status ?? "completed"), tagsJson: JSON.stringify(tags.slice(0, 20)), note: sub.note ?? "" });
+    } else if (["completed", "partial", "spam"].includes(action)) {
+      await updateSubmissionMeta(c.env.DB, id, { status: action, tagsJson: sub.tags_json ?? "[]", note: sub.note ?? "" });
+    }
+    await audit(c.env.DB, action === "delete" ? "response.deleted" : "response.bulk_updated", String(id), `action=${action}`);
+  }
+  return c.redirect("/admin/submissions?msg=Bulk+action+applied");
 });
 
 /* ---------- webhooks ---------- */

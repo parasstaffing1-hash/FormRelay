@@ -77,6 +77,8 @@ export type DeliveryRow = {
   created_at: number;
 };
 
+export type FormVersionRow = { id: number; form_id: string; schema_json: string; published_json?: string | null; created_at: number; created_by: string };
+
 export type FormWithStats = FormRow & {
   submission_count: number;
   last_submission_at: number | null;

@@ -32,3 +32,12 @@ CREATE TABLE IF NOT EXISTS admin_sessions (token_hash TEXT PRIMARY KEY, user_id 
 ALTER TABLE forms ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'ws_default';
 ALTER TABLE submissions ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE submissions ADD COLUMN note TEXT NOT NULL DEFAULT '';
+CREATE TABLE IF NOT EXISTS form_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  form_id TEXT NOT NULL,
+  schema_json TEXT NOT NULL,
+  published_json TEXT,
+  created_at INTEGER NOT NULL,
+  created_by TEXT NOT NULL DEFAULT 'system'
+);
+CREATE INDEX IF NOT EXISTS idx_form_versions_form ON form_versions (form_id, created_at DESC);

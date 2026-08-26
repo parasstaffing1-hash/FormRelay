@@ -84,6 +84,17 @@ CREATE TABLE IF NOT EXISTS forms (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_forms_slug ON forms (slug) WHERE slug IS NOT NULL AND slug != '';
 
+CREATE TABLE IF NOT EXISTS form_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  form_id TEXT NOT NULL,
+  schema_json TEXT NOT NULL,
+  published_json TEXT,
+  created_at INTEGER NOT NULL,
+  created_by TEXT NOT NULL DEFAULT 'system',
+  FOREIGN KEY(form_id) REFERENCES forms(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_form_versions_form ON form_versions (form_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS submissions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   form_id TEXT NOT NULL,

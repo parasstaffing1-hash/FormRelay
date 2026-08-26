@@ -76,9 +76,17 @@ export const InboxPage: FC<{
               </a>
             ) : null}
           </div>
-          <div class="card" style="padding:0 14px">
-            <SubmissionTable subs={subs} showForm />
-          </div>
+          <form method="post" action="/admin/submissions/bulk" onsubmit="return document.querySelectorAll('input[name=id]:checked').length > 0 || (alert('Select at least one response.'), false)">
+            <div class="card" style="padding:0 14px">
+              <SubmissionTable subs={subs} showForm selectable />
+            </div>
+            <div class="flex gap8 mt8 wrap" style="align-items:center">
+              <label class="small"><input type="checkbox" onchange="document.querySelectorAll('input[name=id]').forEach(function(x){x.checked=this.checked}, this)" /> Select all</label>
+              <select class="select" name="action" aria-label="Bulk action"><option value="completed">Mark completed</option><option value="partial">Mark partial</option><option value="spam">Mark spam</option><option value="tag">Add tag</option><option value="delete">Delete</option></select>
+              <input class="input" name="tag" placeholder="Tag when adding tag" style="max-width:180px" />
+              <button class="btn btn-secondary btn-sm" type="submit">Apply</button>
+            </div>
+          </form>
           {showPager ? (
             <div
               class="flex gap8"

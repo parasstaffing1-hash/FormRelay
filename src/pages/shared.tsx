@@ -26,10 +26,11 @@ export function parseData(json: string): Record<string, string> {
   }
 }
 
-export const SubmissionTable: FC<{ subs: SubmissionWithContext[]; showForm?: boolean }> = ({ subs, showForm }) => (
+export const SubmissionTable: FC<{ subs: SubmissionWithContext[]; showForm?: boolean; selectable?: boolean }> = ({ subs, showForm, selectable }) => (
   <table class="tbl">
     <thead>
       <tr>
+        {selectable ? <th style="width:34px"><span class="sr-only">Select</span></th> : null}
         <th style="width:110px">Sender</th>
         <th>Preview</th>
         {showForm ? <th style="width:150px">Form</th> : null}
@@ -41,6 +42,7 @@ export const SubmissionTable: FC<{ subs: SubmissionWithContext[]; showForm?: boo
         const data = parseData(s.data);
         return (
           <tr class="row rowlink-tr">
+            {selectable ? <td><input type="checkbox" name="id" value={s.id} aria-label={`Select ${submissionRef(s.id)}`} /></td> : null}
             <td>
               <a href={`/admin/submissions/${s.id}`} style="display:block">
                 <div class={`cell-main ${s.is_spam ? "muted" : ""} truncate`} style="max-width:190px">
