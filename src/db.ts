@@ -557,3 +557,18 @@ export async function listWorkflowSteps(db: D1Database, runId: string): Promise<
   const { results } = await db.prepare("SELECT * FROM workflow_steps WHERE run_id = ? ORDER BY step_index").bind(runId).all<WorkflowStepRow>();
   return results ?? [];
 }
+
+/* ================= notifications ================= */
+
+export async function createNotification(db: D1Database, kind: string, title: string, detail = ""): Promise<void> {
+  await db.prepare("INSERT INTO notifications (kind, title, detail, created_at) VALUES (?, ?, ?, ?)").bind(kind, title, detail.slice(0, 500), Date.now()).run();
+}
+
+export async function listNotifications(db: D1Database): Promise<import("./types").NotificationRow[]> {
+  const { results } = await db.prepare("SELECT * FROM notifications ORDER BY created_at DESC LIMIT 100").all<import("./types").NotificationRow>();
+  return results ?? [];
+}
+
+export async function markNotificationsRead(db: D1Database): Promise<void> {
+  await db.prepare("UPDATE notifications SET read_at = ? WHERE read_at IS NULL").bind(Date.now()).run();
+}

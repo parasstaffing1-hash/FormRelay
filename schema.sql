@@ -162,3 +162,14 @@ CREATE TABLE IF NOT EXISTS workflow_steps (
 );
 
 CREATE INDEX IF NOT EXISTS idx_workflow_steps_run ON workflow_steps (run_id, step_index);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,
+  title TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '',
+  read_at INTEGER,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications (created_at DESC);

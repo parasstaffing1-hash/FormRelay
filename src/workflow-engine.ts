@@ -1,5 +1,5 @@
 import { FormRow, Bindings, WorkflowAction, WorkflowCondition, WorkflowRow } from "./types";
-import { createWorkflowRun, createWorkflowStep, finishWorkflowRun, finishWorkflowStep } from "./db";
+import { createWorkflowRun, createWorkflowStep, finishWorkflowRun, finishWorkflowStep, createNotification } from "./db";
 import { sendNotification } from "./email";
 
 function parseConditions(raw: string): WorkflowCondition[] {
@@ -86,5 +86,6 @@ export async function executeWorkflow(env: Bindings, workflow: WorkflowRow, form
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await finishWorkflowRun(env.DB, run.id, "failed", message);
+    await createNotification(env.DB, "workflow.failed", `Workflow failed: ${workflow.name}`, `${run.id}: ${message}`);
   }
 }

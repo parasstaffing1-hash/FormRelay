@@ -112,3 +112,4 @@ export type WorkflowCondition = { field: string; operator: "equals" | "not_equal
 export type WorkflowRow = { id: string; form_id: string | null; name: string; trigger: "submission.completed" | "submission.partial" | "score.threshold" | "response.updated" | string; condition_json: string; actions_json: string; active: number; created_at: number; updated_at: number };
 export type WorkflowRunRow = { id: string; workflow_id: string; submission_id: number | null; status: "running" | "succeeded" | "failed" | string; started_at: number; finished_at: number | null; error: string };
 export type WorkflowStepRow = { id: number; run_id: string; step_index: number; action_type: string; status: string; detail: string; started_at: number; finished_at: number | null; retry_count: number };
+export type NotificationRow = { id: number; kind: string; title: string; detail: string; read_at: number | null; created_at: number };

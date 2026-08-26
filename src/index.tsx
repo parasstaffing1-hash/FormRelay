@@ -53,6 +53,9 @@ import {
   setWorkflowActive,
   deleteWorkflow,
   listWorkflowRuns,
+  createNotification,
+  listNotifications,
+  markNotificationsRead,
 } from "./db";
 import apiApp from "./api";
 import { spillIfLarge, resolveSpilledData } from "./spill";
@@ -69,7 +72,8 @@ import { deliverSubmission, sendTestWebhook } from "./webhooks";
 import { getFiles, countFiles, totalStorage, getFile, saveUpload, deleteFile } from "./files";
 import { CLIENT_JS } from "./ui/client";
 import { CSS } from "./ui/styles";
-import type { CommandItem } from "./ui/shell";
+import { AppShell, CommandItem } from "./ui/shell";
+import { PageHead, Button } from "./ui/components";
 import { HomePage } from "./pages/home";
 import { FormsPage } from "./pages/forms";
 import { FormDetailPage, FormTab } from "./pages/form-detail";
@@ -166,6 +170,7 @@ function baseCommands(origin: string): CommandItem[] {
     { label: "Go to Workflows", href: "/admin/workflows", icon: NAV_ICONS.zap },
     { label: "Go to Webhooks", href: "/admin/webhooks", icon: NAV_ICONS.webhook },
     { label: "Go to Settings", href: "/admin/settings", icon: NAV_ICONS.settings },
+    { label: "Notifications", href: "/admin/notifications", icon: NAV_ICONS.inbox },
     { label: "Open documentation", href: "/", icon: NAV_ICONS.book, keywords: "docs help guide" },
   ];
 }
@@ -438,6 +443,7 @@ app.post("/f/:id", async (c) => {
             ? activeHooks.map((h) => deliverSubmission(c.env.DB, h, { id: form.id, name: form.name }, submissionId, data, createdAt))
             : []),
           ...activeWorkflows.map((workflow) => executeWorkflow(c.env, workflow, form, submissionId, data)),
+          createNotification(c.env.DB, "submission.created", `New submission: ${form.name}`, submissionId === null ? "Stored response" : `Response #${submissionId}`),
         ])
       );
     }
@@ -1069,6 +1075,16 @@ app.post("/admin/workflows/:id/delete", async (c) => {
   await deleteWorkflow(c.env.DB, id);
   await audit(c.env.DB, "workflow.deleted", id, "deleted");
   return c.redirect("/admin/workflows?msg=Workflow+deleted");
+});
+
+app.get("/admin/notifications", async (c) => {
+  const [stats, notifications] = await Promise.all([getDashboardStats(c.env.DB), listNotifications(c.env.DB)]);
+  return c.html(<AppShell path="/admin/notifications" crumbs={[{ label: "Notifications" }]} toastMsg={msgFrom(c)} commands={baseCommands(originOf(c.req.url))} formCount={stats.form_count} submissionCount={stats.submission_count}><PageHead title="Notifications" sub="Submission and automation events from this workspace." actions={<form method="post" action="/admin/notifications/read"><Button variant="secondary" type="submit">Mark all read</Button></form>} /><div class="card" style="max-width:820px">{notifications.length ? notifications.map((notification) => <div class="list-item" style={notification.read_at ? "opacity:.62" : ""}><div><div class="cell-main">{notification.title}</div><div class="cell-sub">{notification.detail}</div></div><div class="small muted">{new Date(notification.created_at).toISOString()}</div></div>) : <div class="card-b"><p class="t2 small">No notifications yet.</p></div>}</div></AppShell>);
+});
+
+app.post("/admin/notifications/read", async (c) => {
+  await markNotificationsRead(c.env.DB);
+  return c.redirect("/admin/notifications?msg=Notifications+marked+read");
 });
 
 app.get("/admin/files", async (c) => {

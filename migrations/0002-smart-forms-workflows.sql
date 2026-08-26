@@ -20,3 +20,5 @@ CREATE TABLE IF NOT EXISTS workflow_runs (id TEXT PRIMARY KEY, workflow_id TEXT 
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow ON workflow_runs (workflow_id, started_at DESC);
 CREATE TABLE IF NOT EXISTS workflow_steps (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, step_index INTEGER NOT NULL, action_type TEXT NOT NULL, status TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', started_at INTEGER NOT NULL, finished_at INTEGER, retry_count INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS idx_workflow_steps_run ON workflow_steps (run_id, step_index);
+CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', read_at INTEGER, created_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications (created_at DESC);
