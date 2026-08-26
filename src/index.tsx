@@ -657,7 +657,7 @@ app.use("/admin/*", async (c, next) => {
   if (!authorized) return c.redirect("/admin/login");
   if (["POST", "PUT", "PATCH", "DELETE"].includes(c.req.method)) {
     const requestOrigin = c.req.header("origin") || c.req.header("referer");
-    if (requestOrigin && new URL(requestOrigin).origin !== new URL(c.req.url).origin) return c.text("Cross-origin admin mutation rejected.", 403);
+    if (requestOrigin) { try { if (new URL(requestOrigin).origin !== new URL(c.req.url).origin) return c.text("Cross-origin admin mutation rejected.", 403); } catch { return c.text("Malformed request origin.", 400); } }
   }
   if (membership?.role === "viewer" && c.req.method === "POST") return c.text("Viewer memberships are read-only.", 403);
   if (membership && path.startsWith("/admin/settings/members") && membership.role !== "owner") return c.text("Only workspace owners can manage members.", 403);
