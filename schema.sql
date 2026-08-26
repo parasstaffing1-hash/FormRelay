@@ -1,5 +1,11 @@
 -- Run with: npm run db:init  (idempotent — safe to re-run)
 
+-- migration 2025-08 (idempotent): existing DBs need these four ALTERs once:
+-- ALTER TABLE forms ADD COLUMN schema_json TEXT;
+-- ALTER TABLE forms ADD COLUMN published_json TEXT;
+-- ALTER TABLE forms ADD COLUMN status TEXT NOT NULL DEFAULT 'draft';
+-- ALTER TABLE forms ADD COLUMN views INTEGER NOT NULL DEFAULT 0;
+
 CREATE TABLE IF NOT EXISTS forms (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -7,6 +13,10 @@ CREATE TABLE IF NOT EXISTS forms (
   notify_email TEXT NOT NULL DEFAULT '',
   auto_reply INTEGER NOT NULL DEFAULT 0,
   archived INTEGER NOT NULL DEFAULT 0,
+  schema_json TEXT,
+  published_json TEXT,
+  status TEXT NOT NULL DEFAULT 'draft',
+  views INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
 );
 
@@ -64,3 +74,26 @@ CREATE TABLE IF NOT EXISTS files (
 );
 
 CREATE INDEX IF NOT EXISTS idx_files_form ON files (form_id);
+
+CREATE TABLE IF NOT EXISTS settings_kv (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS api_keys (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  prefix TEXT NOT NULL UNIQUE,
+  hash TEXT NOT NULL UNIQUE,
+  last4 TEXT NOT NULL,
+  last_used_at INTEGER,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  action TEXT NOT NULL,
+  target_id TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+);

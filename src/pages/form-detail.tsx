@@ -4,11 +4,11 @@ import { PageHead, Button, EmptyState, Field, EndpointBox, CodeTabs, RowMenu } f
 import { StatusBadge, SpamBadge } from "../ui/components";
 import { IconWebhook, IconAlert, IconPlus } from "../ui/icons";
 import { FormRow, SubmissionRow, WebhookWithContext } from "../types";
-import { SUBMISSIONS_PAGE_SIZE } from "../db";
+import { SUBMISSIONS_PAGE_SIZE, FormAnalytics } from "../db";
 import { fmtNumber, relTime, submissionRef } from "../util";
 import { NoSubmissionsEmpty } from "./shared";
 
-const TABS = ["submissions", "setup", "notifications", "webhooks", "settings"] as const;
+const TABS = ["build", "submissions", "setup", "notifications", "webhooks", "settings", "analytics"] as const;
 export type FormTab = (typeof TABS)[number];
 
 function setupSnippets(endpoint: string) {
@@ -74,7 +74,8 @@ export const FormDetailPage: FC<{
   commands: { label: string; href: string; icon: string; keywords?: string }[];
   formCount: number;
   submissionCount: number;
-}> = ({ path, form, tab, subs = [], subsPage, subsTotal, webhooks, origin, created, hasEmailProvider, toastMsg, commands, formCount, submissionCount }) => {
+  analytics?: FormAnalytics | null;
+}> = ({ path, form, tab, subs = [], subsPage, subsTotal, webhooks, origin, created, hasEmailProvider, toastMsg, commands, formCount, submissionCount, analytics }) => {
   const endpoint = `${origin}/f/${form.id}`;
   const activeTab: FormTab = TABS.includes(tab) ? tab : "submissions";
 
@@ -83,12 +84,15 @@ export const FormDetailPage: FC<{
   const showPager = subs.length > 0 && (rangeEnd < subsTotal || subsPage > 1);
   const subsTabHref = (p: number) => `/admin/forms/${form.id}?tab=submissions&page=${p}`;
 
-  const tabLink = (t: FormTab, label: string, badge?: number | null) => (
-    <a class={`tab ${activeTab === t ? "active" : ""}`} href={`/admin/forms/${form.id}?tab=${t}`}>
-      {label}
-      {badge !== undefined && badge !== null && badge > 0 ? <span class="badge badge-neutral">{fmtNumber(badge)}</span> : null}
-    </a>
-  );
+  const tabLink = (t: FormTab, label: string, badge?: number | null) => {
+    const href = t === "build" ? `/admin/forms/${form.id}/build` : `/admin/forms/${form.id}?tab=${t}`;
+    return (
+      <a class={`tab ${activeTab === t ? "active" : ""}`} href={href}>
+        {label}
+        {badge !== undefined && badge !== null && badge > 0 ? <span class="badge badge-neutral">{fmtNumber(badge)}</span> : null}
+      </a>
+    );
+  };
 
   return (
     <AppShell
@@ -133,11 +137,13 @@ export const FormDetailPage: FC<{
       </div>
 
       <div class="tabs">
+        {tabLink("build", "Build")}
         {tabLink("submissions", "Submissions", subsTotal)}
         {tabLink("setup", "Setup")}
         {tabLink("notifications", "Notifications")}
         {tabLink("webhooks", "Webhooks", webhooks.length)}
         {tabLink("settings", "Settings")}
+        {tabLink("analytics", "Analytics")}
       </div>
 
       {activeTab === "submissions" ? (
@@ -349,6 +355,78 @@ export const FormDetailPage: FC<{
           </div>
         </div>
       ) : null}
+
+      {activeTab === "analytics" ? (
+        analytics ? <AnalyticsView analytics={analytics} /> : <p class="t2 small">Loading analytics…</p>
+      ) : null}
     </AppShell>
+  );
+};
+
+const AnalyticsView: FC<{ analytics: FormAnalytics }> = ({ analytics }) => {
+  const { daily, views, total, spam, referrers } = analytics;
+  const completion = views > 0 ? (total / views) * 100 : 0;
+  const spamRate = total > 0 ? (spam / total) * 100 : 0;
+  const max = Math.max(...daily.map((d) => d.count), 1);
+  const w = 600;
+  const h = 110;
+  const padLeft = 24;
+  const padRight = 8;
+  const padTop = 8;
+  const padBottom = 20;
+  const chartW = w - padLeft - padRight;
+  const chartH = h - padTop - padBottom;
+  const barGap = 2;
+  const barW = Math.max(1, chartW / daily.length - barGap);
+  return (
+    <div style="max-width:720px">
+      <div class="stats" style="gap: 18px 32px; padding-bottom: 14px">
+        <div class="stat"><div class="stat-v">{fmtNumber(views)}</div><div class="stat-l">Total views</div></div>
+        <div class="stat"><div class="stat-v">{fmtNumber(total)}</div><div class="stat-l">Submissions</div></div>
+        <div class="stat"><div class="stat-v">{completion.toFixed(1)}%</div><div class="stat-l">Completion rate</div></div>
+        <div class="stat"><div class="stat-v">{spamRate.toFixed(1)}%</div><div class="stat-l">Spam rate</div></div>
+      </div>
+
+      <div class="card card-b mb16">
+        <div class="flex between mb8"><span class="small" style="font-weight:600">Submissions per day — last 30 days</span><span class="muted small">max {fmtNumber(max)}/day</span></div>
+        <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h} role="img" aria-label="Submissions per day last 30 days" style="display:block">
+          <line x1={padLeft} y1={padTop} x2={padLeft} y2={h - padBottom} stroke="var(--border)" stroke-width="1" />
+          <line x1={padLeft} y1={h - padBottom} x2={w - padRight} y2={h - padBottom} stroke="var(--border)" stroke-width="1" />
+          {daily.map((d, i) => {
+            const barH = max ? (d.count / max) * chartH : 0;
+            const x = padLeft + i * (chartW / daily.length) + barGap / 2;
+            const y = h - padBottom - barH;
+            return (
+              <>
+                <rect x={x} y={y} width={barW} height={barH} rx="2" fill={d.count ? "var(--accent)" : "var(--border)"} opacity={d.count ? 0.9 : 0.6} />
+                <title>{`${d.date}: ${d.count}`}</title>
+              </>
+            );
+          })}
+          {daily.map((d, i) => {
+            if (i % 5 !== 0 && i !== daily.length - 1) return null;
+            const x = padLeft + i * (chartW / daily.length) + (chartW / daily.length) / 2;
+            return <text x={x} y={h - 6} text-anchor="middle" font-size="8" fill="var(--text-muted)">{d.date.slice(5)}</text>;
+          })}
+        </svg>
+        {total === 0 ? <p class="t2 small mt8" style="text-align:center">No submissions in the last 30 days.</p> : null}
+      </div>
+
+      <div class="card">
+        <div class="card-h">Top referrers</div>
+        {referrers.length ? (
+          <table class="tbl">
+            <thead><tr><th>Referrer</th><th class="num">Count</th></tr></thead>
+            <tbody>
+              {referrers.map((r) => (
+                <tr><td class="truncate" style="max-width:420px" title={r.referer}>{r.referer}</td><td class="num">{fmtNumber(r.count)}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <p class="t2 small" style="padding:14px">No referrer data yet — submissions will show their Referer header here.</p>
+        )}
+      </div>
+    </div>
   );
 };

@@ -1,10 +1,10 @@
 import { FC } from "hono/jsx";
 import { AppShell, CommandItem } from "../ui/shell";
-import { PageHead, Button, EmptyState, UsageMeter } from "../ui/components";
+import { PageHead, Button, EmptyState, UsageMeter, CopyButton } from "../ui/components";
 import {
   IconZap, IconFile, IconLogo, IconAlert,
 } from "../ui/icons";
-import { FormRow, FormWithStats, DashboardStats, FileWithContext } from "../types";
+import { FormRow, FormWithStats, DashboardStats, FileWithContext, ApiKeyRow } from "../types";
 import { fmtBytes, fmtDateTime, fmtNumber } from "../util";
 import { FILES_PAGE_SIZE } from "../files";
 
@@ -170,7 +170,10 @@ export const SettingsPage: FC<{
   commands: CommandItem[];
   formCount: number;
   submissionCount: number;
-}> = ({ path, section, workspaceName, stats, formsWithNotify, toastMsg, commands, formCount, submissionCount }) => {
+  retentionDays?: string | null;
+  apiKeys?: ApiKeyRow[];
+  createdKey?: string;
+}> = ({ path, section, workspaceName, stats, formsWithNotify, toastMsg, commands, formCount, submissionCount, retentionDays, apiKeys, createdKey }) => {
   const active = SECTIONS.some((s) => s.key === section) ? section : "general";
 
   return (
@@ -186,21 +189,39 @@ export const SettingsPage: FC<{
 
         <div style="flex:1;min-width:0">
           {active === "general" ? (
-            <div class="setsec">
-              <h2>Workspace</h2>
-              <p class="desc">Identity for this FormRelay installation.</p>
-              <div class="kv">
-                <span class="k">Workspace name</span>
-                <span>{workspaceName}</span>
+            <>
+              <div class="setsec">
+                <h2>Workspace</h2>
+                <p class="desc">Identity for this FormRelay installation.</p>
+                <div class="kv">
+                  <span class="k">Workspace name</span>
+                  <span>{workspaceName}</span>
+                </div>
+                <div class="kv">
+                  <span class="k">Deployment</span>
+                  <span>Cloudflare Workers · global edge</span>
+                </div>
+                <p class="hint small t2 mt16">
+                  Set the workspace name with the <code class="mono">WORKSPACE_NAME</code> variable in your Worker config.
+                </p>
               </div>
-              <div class="kv">
-                <span class="k">Deployment</span>
-                <span>Cloudflare Workers · global edge</span>
+              <div class="setsec">
+                <h2>Retention</h2>
+                <p class="desc">Automatically prune old submissions to keep D1 small. Empty = keep forever.</p>
+                <form method="post" action="/admin/settings/retention">
+                  <div class="field">
+                    <label for="ret-days">Retention (days)</label>
+                    <input class="input" id="ret-days" type="number" min="1" name="retention_days" value={retentionDays ?? ""} placeholder="Off (keep forever)" style="max-width:200px" />
+                    <div class="hint">Number of days to keep submissions. Leave empty to disable.</div>
+                  </div>
+                  <button class="btn btn-primary" type="submit">Save retention</button>
+                </form>
+                <form method="post" action="/admin/maintenance/prune" onsubmit="return confirm('Prune submissions older than retention period? This deletes data and files.')" style="margin-top:12px">
+                  <button class="btn btn-secondary" type="submit">Purge now</button>
+                  <span class="hint small t2" style="margin-left:8px">Deletes submissions older than the configured period.</span>
+                </form>
               </div>
-              <p class="hint small t2 mt16">
-                Set the workspace name with the <code class="mono">WORKSPACE_NAME</code> variable in your Worker config.
-              </p>
-            </div>
+            </>
           ) : null}
 
           {active === "members" ? (
@@ -231,11 +252,63 @@ export const SettingsPage: FC<{
             <div class="setsec">
               <h2>API keys</h2>
               <p class="desc">Programmatic access to the dashboard API.</p>
-              <EmptyState
-                icon={<IconKeyish />}
-                title="Dashboard API keys are coming soon"
-                desc="Your public form endpoints need no keys — that's the point. Management APIs are on the roadmap."
-              />
+              {createdKey ? (
+                <div class="callout" style="background:#e6f4ea;border:1px solid #a8d5b5;border-radius:8px;padding:14px 16px;margin-bottom:16px;display:flex;flex-direction:column;gap:8px">
+                  <div style="font-weight:600;font-size:13px">New API key — copy it now</div>
+                  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                    <code class="mono" style="background:#fff;border:1px solid #d3e7d9;padding:6px 10px;border-radius:6px;font-size:13px;word-break:break-all">{createdKey}</code>
+                    <CopyButton value={createdKey} />
+                  </div>
+                  <div class="hint small t2" style="color:#5c5c5c">This key will not be shown again. Store it securely — it is shown once via URL query for this demo. In production, transmit via secure header and clear the URL after copying. Risk: URL history/logging may retain the key.</div>
+                </div>
+              ) : null}
+              <div style="margin-bottom:18px">
+                <h3 style="font-size:14px;font-weight:600;margin:0 0 8px">Create new key</h3>
+                <form method="post" action="/admin/api-keys" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+                  <div class="field" style="margin:0;flex:1;min-width:180px">
+                    <label for="api-key-name">Name</label>
+                    <input class="input" id="api-key-name" name="name" placeholder="e.g. CI, Zapier, Mobile" required style="max-width:320px" />
+                  </div>
+                  <button class="btn btn-primary" type="submit">Create key</button>
+                </form>
+                <p class="hint small t2" style="margin-top:6px">Key format: <code class="mono">fr_live_</code> + 32 alnum. Stored as SHA-256 hash + prefix (first 12 chars) + last4.</p>
+              </div>
+              {apiKeys && apiKeys.length ? (
+                <div class="card" style="padding:0 14px">
+                  <table class="tbl">
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Key</th>
+                        <th>Last used</th>
+                        <th>Created</th>
+                        <th style="width:90px"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {apiKeys.map((k) => (
+                        <tr class="row">
+                          <td><span class="cell-main">{k.name}</span><span class="cell-sub mono" style="font-size:11px">{k.id}</span></td>
+                          <td><code class="mono" style="font-size:12px">{k.prefix}…{k.last4}</code></td>
+                          <td><span class="t2 small">{k.last_used_at ? fmtDateTime(k.last_used_at) : "never"}</span></td>
+                          <td><span class="t2 small">{fmtDateTime(k.created_at)}</span></td>
+                          <td>
+                            <form method="post" action={`/admin/api-keys/${k.id}/revoke`} onsubmit="return confirm('Revoke this key? This cannot be undone.')" style="display:inline">
+                              <button class="btn btn-danger btn-sm" type="submit">Revoke</button>
+                            </form>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div class="empty" style="padding:18px;text-align:center;border:1px dashed var(--border);border-radius:8px">
+                  <div style="display:flex;justify-content:center;margin-bottom:8px"><IconKeyish /></div>
+                  <div style="font-weight:600;font-size:13px">No API keys yet</div>
+                  <p class="t2 small" style="margin:6px 0 0">Create one above — the full key is shown once after creation.</p>
+                </div>
+              )}
             </div>
           ) : null}
 

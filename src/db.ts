@@ -1,6 +1,7 @@
 import {
   FormRow, FormWithStats, SubmissionRow, SubmissionWithContext,
   WebhookRow, WebhookWithContext, DeliveryRow, DashboardStats,
+  ApiKeyRow,
 } from "./types";
 
 const ALPHABET = "abcdefghijkmnopqrstuvwxyz23456789";
@@ -20,7 +21,7 @@ function randomSecret(): string {
 
 export async function createForm(
   db: D1Database,
-  fields: { name: string; redirect_url?: string; notify_email?: string }
+  fields: { name: string; redirect_url?: string; notify_email?: string; schemaJson?: string | null }
 ): Promise<FormRow> {
   const row: FormRow = {
     id: randomId(10),
@@ -29,17 +30,42 @@ export async function createForm(
     notify_email: fields.notify_email ?? "",
     auto_reply: 0,
     archived: 0,
+    schema_json: fields.schemaJson ?? null,
+    published_json: null,
+    status: "draft",
+    views: 0,
     created_at: Date.now(),
   };
   await db
-    .prepare("INSERT INTO forms (id, name, redirect_url, notify_email, auto_reply, archived, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .bind(row.id, row.name, row.redirect_url, row.notify_email, row.auto_reply, row.archived, row.created_at)
+    .prepare("INSERT INTO forms (id, name, redirect_url, notify_email, auto_reply, archived, schema_json, published_json, status, views, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .bind(row.id, row.name, row.redirect_url, row.notify_email, row.auto_reply, row.archived, row.schema_json, row.published_json, row.status, row.views, row.created_at)
     .run();
   return row;
 }
 
 export async function duplicateForm(db: D1Database, source: FormRow): Promise<FormRow> {
-  return createForm(db, { name: `${source.name} (copy)`, redirect_url: source.redirect_url });
+  return createForm(db, { name: `${source.name} (copy)`, redirect_url: source.redirect_url, schemaJson: source.schema_json });
+}
+export async function updateFormSchema(db: D1Database, id: string, schemaJson: string): Promise<void> {
+  await db.prepare("UPDATE forms SET schema_json = ? WHERE id = ?").bind(schemaJson, id).run();
+}
+export async function publishForm(db: D1Database, id: string): Promise<void> {
+  const row = await getForm(db, id);
+  if (!row) return;
+  await db.prepare("UPDATE forms SET published_json = schema_json, status = 'published' WHERE id = ?").bind(id).run();
+}
+export async function unpublishForm(db: D1Database, id: string): Promise<void> {
+  await db.prepare("UPDATE forms SET status = 'draft' WHERE id = ?").bind(id).run();
+}
+export async function incrementFormViews(db: D1Database, id: string): Promise<void> {
+  await db.prepare("UPDATE forms SET views = views + 1 WHERE id = ?").bind(id).run();
+}
+export async function getSetting(db: D1Database, key: string): Promise<string | null> {
+  const r = await db.prepare("SELECT value FROM settings_kv WHERE key = ?").bind(key).first<{ value:string }>();
+  return r?.value ?? null;
+}
+export async function setSetting(db: D1Database, key: string, value: string): Promise<void> {
+  await db.prepare("INSERT INTO settings_kv (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(key,value).run();
 }
 
 export async function listForms(db: D1Database): Promise<FormRow[]> {
@@ -92,7 +118,7 @@ export async function deleteForm(db: D1Database, id: string): Promise<void> {
 export async function insertSubmission(
   db: D1Database,
   formId: string,
-  data: Record<string, string>,
+  data: Record<string, unknown>,
   ip: string,
   userAgent: string,
   referer: string,
@@ -220,6 +246,93 @@ export async function recentSubmissions(db: D1Database, limit = 8): Promise<Subm
   return listSubmissions(db, { limit });
 }
 
+/* ================= analytics ================= */
+
+export type AnalyticsDaily = { date: string; count: number };
+export type FormAnalytics = {
+  daily: AnalyticsDaily[];
+  views: number;
+  total: number;
+  spam: number;
+  referrers: { referer: string; count: number }[];
+};
+export type DashboardAnalytics = { daily: AnalyticsDaily[] };
+
+function dateKey(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+function fillDaily(days: number): AnalyticsDaily[] {
+  const out: AnalyticsDaily[] = [];
+  const today = new Date();
+  // Use UTC midnight to align with SQLite unixepoch date
+  const base = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+  for (let i = days - 1; i >= 0; i--) {
+    const dt = new Date(base.getTime() - i * 86400000);
+    out.push({ date: dateKey(dt), count: 0 });
+  }
+  return out;
+}
+
+export async function getAnalytics(db: D1Database, formId: string): Promise<FormAnalytics> {
+  const form = await getForm(db, formId);
+  const views = form?.views ?? 0;
+  const cutoff = Date.now() - 30 * 86400000;
+  const [dailyRows, totalRow, spamRow, refRows] = await Promise.all([
+    db
+      .prepare(
+        `SELECT strftime('%Y-%m-%d', datetime(created_at/1000, 'unixepoch')) AS d, COUNT(*) AS c
+         FROM submissions WHERE form_id = ? AND created_at >= ? GROUP BY d ORDER BY d`
+      )
+      .bind(formId, cutoff)
+      .all<{ d: string; c: number }>(),
+    db.prepare("SELECT COUNT(*) AS n FROM submissions WHERE form_id = ?").bind(formId).first<{ n: number }>(),
+    db.prepare("SELECT COUNT(*) AS n FROM submissions WHERE form_id = ? AND is_spam = 1").bind(formId).first<{ n: number }>(),
+    db
+      .prepare(
+        `SELECT referer, COUNT(*) AS count FROM submissions
+         WHERE form_id = ? AND referer != '' GROUP BY referer ORDER BY count DESC LIMIT 5`
+      )
+      .bind(formId)
+      .all<{ referer: string; count: number }>(),
+  ]);
+
+  const daily = fillDaily(30);
+  const map = new Map<string, number>();
+  for (const r of dailyRows.results ?? []) map.set(r.d, r.c);
+  for (const bucket of daily) {
+    const v = map.get(bucket.date);
+    if (v !== undefined) bucket.count = v;
+  }
+
+  return {
+    daily,
+    views,
+    total: totalRow?.n ?? 0,
+    spam: spamRow?.n ?? 0,
+    referrers: (refRows.results ?? []).map((r) => ({ referer: r.referer, count: r.count })),
+  };
+}
+
+export async function getDashboardAnalytics(db: D1Database): Promise<DashboardAnalytics> {
+  const cutoff = Date.now() - 14 * 86400000;
+  const rows = await db
+    .prepare(
+      `SELECT strftime('%Y-%m-%d', datetime(created_at/1000, 'unixepoch')) AS d, COUNT(*) AS c
+       FROM submissions WHERE created_at >= ? GROUP BY d ORDER BY d`
+    )
+    .bind(cutoff)
+    .all<{ d: string; c: number }>();
+  const daily = fillDaily(14);
+  const map = new Map<string, number>();
+  for (const r of rows.results ?? []) map.set(r.d, r.c);
+  for (const b of daily) {
+    const v = map.get(b.date);
+    if (v !== undefined) b.count = v;
+  }
+  return { daily };
+}
+
 /* ================= webhooks ================= */
 
 export async function createWebhook(db: D1Database, formId: string, url: string): Promise<WebhookRow> {
@@ -286,4 +399,43 @@ export async function listDeliveries(db: D1Database, webhookId: string, limit = 
     .bind(webhookId, limit)
     .all<DeliveryRow>();
   return results ?? [];
+}
+
+/* ================= api_keys (additive) ================= */
+
+export async function createApiKey(
+  db: D1Database,
+  params: { name: string; prefix: string; hash: string; last4: string }
+): Promise<ApiKeyRow> {
+  const row: ApiKeyRow = {
+    id: `ak_${randomId(12)}`,
+    name: params.name,
+    prefix: params.prefix,
+    hash: params.hash,
+    last4: params.last4,
+    last_used_at: null,
+    created_at: Date.now(),
+  };
+  await db
+    .prepare("INSERT INTO api_keys (id, name, prefix, hash, last4, last_used_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .bind(row.id, row.name, row.prefix, row.hash, row.last4, row.last_used_at, row.created_at)
+    .run();
+  return row;
+}
+
+export async function listApiKeys(db: D1Database): Promise<ApiKeyRow[]> {
+  const { results } = await db.prepare("SELECT * FROM api_keys ORDER BY created_at DESC").all<ApiKeyRow>();
+  return results ?? [];
+}
+
+export async function findApiKeyByHash(db: D1Database, hash: string): Promise<ApiKeyRow | null> {
+  return await db.prepare("SELECT * FROM api_keys WHERE hash = ?").bind(hash).first<ApiKeyRow>();
+}
+
+export async function touchApiKey(db: D1Database, id: string): Promise<void> {
+  await db.prepare("UPDATE api_keys SET last_used_at = ? WHERE id = ?").bind(Date.now(), id).run();
+}
+
+export async function revokeApiKey(db: D1Database, id: string): Promise<void> {
+  await db.prepare("DELETE FROM api_keys WHERE id = ?").bind(id).run();
 }

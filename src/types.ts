@@ -16,6 +16,10 @@ export type FormRow = {
   notify_email: string;
   auto_reply: number;
   archived: number;
+  schema_json: string | null;
+  published_json: string | null;
+  status: string;
+  views: number;
   created_at: number;
 };
 
@@ -79,3 +83,6 @@ export type FileRow = {
 };
 
 export type FileWithContext = FileRow & { form_name: string | null };
+
+export type ApiKeyRow = { id:string; name:string; prefix:string; hash:string; last4:string; last_used_at:number|null; created_at:number };
+export type AuditRow = { id:number; action:string; target_id:string; detail:string; created_at:number };

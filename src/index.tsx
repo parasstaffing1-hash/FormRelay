@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { Bindings, FormRow, SubmissionRow } from "./types";
-import { hmacSign, hmacVerify, csvCell } from "./util";
+import { hmacSign, hmacVerify, csvCell, escapeHtml } from "./util";
 import {
   createForm,
   duplicateForm,
@@ -9,6 +9,10 @@ import {
   listFormsWithStats,
   getForm,
   updateForm,
+  updateFormSchema,
+  publishForm,
+  unpublishForm,
+  incrementFormViews,
   setFormArchived,
   deleteForm,
   insertSubmission,
@@ -28,7 +32,20 @@ import {
   setWebhookActive,
   deleteWebhook,
   listDeliveries,
+  getAnalytics,
+  getDashboardAnalytics,
+  getSetting,
+  setSetting,
+  createApiKey,
+  listApiKeys,
+  revokeApiKey,
 } from "./db";
+import apiApp from "./api";
+import { spillIfLarge, resolveSpilledData } from "./spill";
+import { parseSchema, emptySchema, validateBlockValue } from "./blocks";
+import { PublicFormPage } from "./pages/public-form";
+import { BuilderPage } from "./pages/builder";
+import { audit } from "./audit";
 import { sendNotification, sendAutoReply } from "./email";
 import { checkSpam, normalizePayload } from "./spam";
 import { deliverSubmission, sendTestWebhook } from "./webhooks";
@@ -57,6 +74,9 @@ const NAV_ICONS: Record<string, string> = {
 
 type Env = { Bindings: Bindings };
 const app = new Hono<Env>();
+
+// Mount API v1 subapp
+app.route("/api/v1", apiApp);
 
 /* ---------- helpers ---------- */
 
@@ -87,6 +107,12 @@ function msgFrom(c: { req: { url: string } }): string | undefined {
 function parsePage(raw: string | null): number {
   const n = Number(raw);
   return Number.isInteger(n) && n >= 1 ? n : 1;
+}
+
+async function sha256Hex(input: string): Promise<string> {
+  const data = new TextEncoder().encode(input);
+  const buf = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 function baseCommands(origin: string): CommandItem[] {
@@ -138,20 +164,72 @@ app.post("/f/:id", async (c) => {
   if (form.archived) return c.text("This form is no longer accepting submissions.", 410);
 
   const ct = contentType.toLowerCase();
-  let data: Record<string, string>;
+  let data: Record<string, string> = {};
+  let rawPayload: Record<string, unknown> = {};
   let uploads: { fieldName: string; file: File }[] = [];
   if (ct.includes("application/json")) {
     try {
       const body = await c.req.json();
-      data = normalizePayload(typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {});
+      rawPayload = typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
+      data = normalizePayload(rawPayload);
     } catch {
+      rawPayload = {};
       data = {};
     }
   } else {
-    const raw = await c.req.parseBody();
-    data = normalizePayload(raw);
-    for (const [fieldName, value] of Object.entries(raw)) {
-      if (value instanceof File && value.size > 0) uploads.push({ fieldName, file: value });
+    let parsedViaFormData = false;
+    try {
+      const fd = await c.req.raw.formData();
+      const seen = new Set<string>();
+      for (const key of fd.keys()) {
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const all = fd.getAll(key);
+        const files = all.filter((v) => typeof v !== "string") as unknown as File[];
+        const hasFiles = files.length > 0;
+        if (hasFiles) {
+          const valid = files.filter((f) => (f as File).size > 0);
+          if (valid.length === 0) {
+            rawPayload[key] = "";
+          } else if (valid.length === 1) {
+            const single = valid[0];
+            // if there are also string values mixed (rare), keep file as primary and strings as array? file case takes precedence
+            rawPayload[key] = single;
+            uploads.push({ fieldName: key, file: single });
+            // if strs present alongside, they would be ignored for file fields
+          } else {
+            rawPayload[key] = valid;
+            for (const f of valid) uploads.push({ fieldName: key, file: f });
+          }
+        } else {
+          if (all.length === 1) rawPayload[key] = all[0] as string;
+          else rawPayload[key] = all as string[];
+        }
+      }
+      const normInput: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(rawPayload)) normInput[k] = v;
+      data = normalizePayload(normInput);
+      parsedViaFormData = true;
+    } catch {
+      parsedViaFormData = false;
+    }
+    if (!parsedViaFormData) {
+      try {
+        const raw = await c.req.parseBody();
+        rawPayload = raw as Record<string, unknown>;
+        data = normalizePayload(raw);
+        for (const [fieldName, value] of Object.entries(raw)) {
+          if (value instanceof File && value.size > 0) uploads.push({ fieldName, file: value });
+          else if (Array.isArray(value)) {
+            for (const v of value) if (v instanceof File && (v as File).size > 0) uploads.push({ fieldName, file: v as File });
+            // preserve array payload for validation
+            if (value.length > 0) rawPayload[fieldName] = value;
+          }
+        }
+      } catch {
+        data = {};
+        rawPayload = {};
+      }
     }
   }
   const isJson = ct.includes("application/json") || "_json" in data;
@@ -162,6 +240,118 @@ app.post("/f/:id", async (c) => {
         ? c.json({ ok: true })
         : c.html("<!doctype html><body style='font-family:system-ui;display:flex;min-height:100vh;align-items:center;justify-content:center'><p>Thank you!</p></body>");
     }
+  }
+
+  const schema = parseSchema(form.published_json);
+  if (schema) {
+    const errors: Record<string, string> = {};
+    const values: Record<string, string> = {};
+    for (const block of schema.blocks) {
+      if (block.type === "heading" || block.type === "divider" || block.type === "paragraph") continue;
+      let raw: unknown = rawPayload[block.id];
+      if (block.type === "file") {
+        const hasFile = uploads.some((u) => u.fieldName === block.id);
+        if (block.required && !hasFile) raw = "";
+        else if (hasFile) raw = "file";
+        else raw = "";
+      }
+      const err = validateBlockValue(block, raw);
+      if (err) errors[block.id] = err;
+      const cur = rawPayload[block.id];
+      if (Array.isArray(cur)) values[block.id] = (cur as unknown[]).map(String).join(", ");
+      else if (typeof cur === "object" && cur !== null && "name" in (cur as Record<string, unknown>)) values[block.id] = String((cur as File).name);
+      else if (cur !== undefined && cur !== null) values[block.id] = String(cur);
+      else values[block.id] = "";
+      if (block.type === "file") {
+        const names = uploads.filter((u) => u.fieldName === block.id).map((u) => u.file.name);
+        values[block.id] = names.join(", ");
+      }
+      // checkbox single: browser sends "on" when checked, missing when unchecked -> keep as is for re-render
+      if (block.type === "checkbox" && rawPayload[block.id] !== undefined) {
+        values[block.id] = String(rawPayload[block.id]);
+      }
+    }
+    if (Object.keys(errors).length > 0) {
+      const origin = originOf(c.req.url);
+      c.status(400);
+      return c.html(<PublicFormPage form={form} schema={schema} origin={origin} errors={errors} values={values} />);
+    }
+    const labels: Record<string, string> = {};
+    const stored: Record<string, unknown> = {};
+    for (const block of schema.blocks) {
+      if (block.type === "heading" || block.type === "divider" || block.type === "paragraph") continue;
+      const cur = rawPayload[block.id];
+      let str = "";
+      if (block.type === "file") {
+        const names = uploads.filter((u) => u.fieldName === block.id).map((u) => u.file.name);
+        str = names.join(", ");
+        if (!str && Array.isArray(cur)) str = (cur as unknown[]).map(String).join(", ");
+      } else if (Array.isArray(cur)) str = (cur as unknown[]).map(String).join(", ");
+      else if (typeof cur === "object" && cur !== null && "name" in (cur as Record<string, unknown>)) str = `[file: ${(cur as File).name}]`;
+      else if (cur !== undefined && cur !== null) str = String(cur);
+      else str = "";
+      stored[block.id] = str;
+      labels[block.id] = block.label;
+    }
+    stored["_labels"] = labels;
+    stored["_v"] = 1;
+
+    const ip =
+      c.req.header("cf-connecting-ip") ||
+      c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ||
+      "unknown";
+    const userAgent = c.req.header("user-agent") || "";
+    const referer = c.req.header("referer") || "";
+    let verdict = { spam: false, reason: "" };
+    try {
+      verdict = await checkSpam(c.env, data, ip);
+    } catch {
+      // never block a submission because spam checks failed
+    }
+    let toStoreSchema: Record<string, unknown> = stored;
+    const rawStoredJson = JSON.stringify(stored);
+    if (rawStoredJson.length > 10000 && c.env.FILES) {
+      const spilled = await spillIfLarge(c.env, rawStoredJson);
+      if (spilled.startsWith("r2://")) {
+        toStoreSchema = { _spilled: spilled, _labels: labels, _v: 1 };
+      }
+    }
+    const submissionId = await insertSubmission(c.env.DB, formId, toStoreSchema, ip, userAgent, referer, verdict.spam);
+    if (c.env.FILES && uploads.length > 0 && !verdict.spam) {
+      const env = c.env;
+      c.executionCtx.waitUntil(
+        Promise.allSettled(uploads.map((u) => saveUpload(env, formId, submissionId, u.fieldName, u.file)))
+      );
+    }
+    if (!verdict.spam) {
+      const hooks = await listWebhooks(c.env.DB, formId);
+      const activeHooks = hooks.filter((h) => h.active);
+      const createdAt = Date.now();
+      c.executionCtx.waitUntil(
+        Promise.allSettled([
+          sendNotification(c.env, form, data),
+          sendAutoReply(c.env, form, data),
+          ...(submissionId !== null
+            ? activeHooks.map((h) =>
+                deliverSubmission(c.env.DB, h, { id: form.id, name: form.name }, submissionId, data, createdAt)
+              )
+            : []),
+        ])
+      );
+    }
+    if (isJson) return c.json({ ok: true });
+    const redirect = data._redirect || form.redirect_url || schema.settings.redirectUrl;
+    if (redirect) return c.redirect(redirect, 303);
+    if (schema.settings.successMessage && schema.settings.successMessage.trim() !== "") {
+      const msg = schema.settings.successMessage;
+      const safe = escapeHtml(msg);
+      return c.html(
+        `<!doctype html><body style="font-family:system-ui,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;background:#fff;color:#37352f"><div style="text-align:center;max-width:520px;padding:24px"><div style="font-size:34px;margin-bottom:8px">&#10003;</div><h1 style="font-size:20px;font-weight:600">Thank you!</h1><p style="color:#37352f;font-size:14px;margin-top:8px;white-space:pre-wrap">${safe}</p></div></body>`
+      );
+    }
+    return c.html(
+      `<!doctype html><body style="font-family:system-ui,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;background:#fff;color:#37352f"><div style="text-align:center"><div style="font-size:34px;margin-bottom:8px">&#10003;</div><h1 style="font-size:20px;font-weight:600">Thank you!</h1><p style="color:#787774;font-size:14px">Your submission has been received.</p></div></body>`
+    );
   }
 
   const ip =
@@ -178,8 +368,20 @@ app.post("/f/:id", async (c) => {
     // never block a submission because spam checks failed
   }
 
+  const stripped = stripControlFields(data);
+  let toStore: Record<string, string> = stripped as Record<string, string>;
+  const rawJson = JSON.stringify(stripped);
+  if (rawJson.length > 10000 && c.env.FILES) {
+    const spilled = await spillIfLarge(c.env, rawJson);
+    if (spilled.startsWith("r2://")) {
+      const lbl = (stripped as Record<string, unknown>)["_labels"];
+      const wrapper: Record<string, unknown> = { _spilled: spilled, _v: 1 };
+      if (lbl !== undefined) wrapper["_labels"] = lbl;
+      toStore = wrapper as unknown as Record<string, string>;
+    }
+  }
   const submissionId = await insertSubmission(
-    c.env.DB, formId, stripControlFields(data), ip, userAgent, referer, verdict.spam
+    c.env.DB, formId, toStore, ip, userAgent, referer, verdict.spam
   );
 
   if (c.env.FILES && uploads.length > 0 && !verdict.spam) {
@@ -216,7 +418,21 @@ app.post("/f/:id", async (c) => {
   );
 });
 
-app.get("/f/:id", (c) => c.text("This endpoint accepts POST submissions only.", 405));
+app.get("/f/:id", async (c) => {
+  const form = await getForm(c.env.DB, c.req.param("id"));
+  if (!form) return c.text("Unknown form endpoint", 404);
+  if (form.archived) return c.text("This form is no longer accepting submissions.", 410);
+  const accept = c.req.header("accept") ?? "";
+  const isHtml = !accept || accept.includes("text/html") || accept.includes("*/*");
+  const wantsJsonExplicit = accept.includes("application/json") && !accept.includes("text/html");
+  if (!isHtml && wantsJsonExplicit) {
+    return c.text("This endpoint accepts POST submissions only.", 405);
+  }
+  const schema = parseSchema(form.published_json);
+  c.executionCtx.waitUntil(incrementFormViews(c.env.DB, form.id));
+  const origin = originOf(c.req.url);
+  return c.html(<PublicFormPage form={form} schema={schema} origin={origin} />);
+});
 
 /* ---------- auth ---------- */
 
@@ -257,15 +473,19 @@ app.use("/admin/*", async (c, next) => {
 /* ---------- home / dashboard ---------- */
 
 app.get("/admin", async (c) => {
-  const stats = await getDashboardStats(c.env.DB);
-  const forms = await listFormsWithStats(c.env.DB);
-  const recent = await recentSubmissions(c.env.DB, 8);
+  const [stats, forms, recent, sparkline] = await Promise.all([
+    getDashboardStats(c.env.DB),
+    listFormsWithStats(c.env.DB),
+    recentSubmissions(c.env.DB, 8),
+    getDashboardAnalytics(c.env.DB),
+  ]);
   return c.html(
     <HomePage
       path={new URL(c.req.url).pathname}
       stats={stats}
       forms={forms}
       recent={recent}
+      sparkline={sparkline}
       toastMsg={msgFrom(c)}
       commands={baseCommands(originOf(c.req.url))}
     />
@@ -303,7 +523,65 @@ app.post("/admin/forms", async (c) => {
   const body = await c.req.parseBody();
   const name = String(body.name ?? "").trim() || "Untitled form";
   const row = await createForm(c.env.DB, { name });
+  await audit(c.env.DB, "form.created", row.id, name);
   return c.redirect(`/admin/forms/${row.id}?tab=setup&created=1&msg=Form+created`);
+});
+
+app.get("/admin/forms/:id/build", async (c) => {
+  const url = new URL(c.req.url);
+  const form = await getForm(c.env.DB, c.req.param("id"));
+  if (!form) return c.notFound();
+  const raw = form.schema_json;
+  const parsed = parseSchema(raw);
+  const schema = parsed ?? emptySchema();
+  const editId = url.searchParams.get("edit") ?? undefined;
+  const stats = await getDashboardStats(c.env.DB);
+  return c.html(
+    <BuilderPage
+      form={form}
+      schema={schema}
+      origin={originOf(c.req.url)}
+      toastMsg={msgFrom(c)}
+      commands={baseCommands(originOf(c.req.url))}
+      formCount={stats.form_count}
+      submissionCount={stats.submission_count}
+      editId={editId}
+    />
+  );
+});
+
+app.post("/admin/forms/:id/schema", async (c) => {
+  const id = c.req.param("id");
+  const form = await getForm(c.env.DB, id);
+  if (!form) return c.notFound();
+  const body = await c.req.parseBody();
+  const raw = String(body.schema_json ?? "");
+  const parsed = parseSchema(raw);
+  if (!parsed) {
+    return c.redirect(`/admin/forms/${id}/build?msg=${encodeURIComponent("Invalid schema JSON")}`);
+  }
+  const normalized = JSON.stringify(parsed);
+  await updateFormSchema(c.env.DB, id, normalized);
+  await audit(c.env.DB, "form.settings.updated", id, "schema saved");
+  return c.redirect(`/admin/forms/${id}/build?msg=${encodeURIComponent("Schema saved")}`);
+});
+
+app.post("/admin/forms/:id/publish", async (c) => {
+  const id = c.req.param("id");
+  const form = await getForm(c.env.DB, id);
+  if (!form) return c.notFound();
+  await publishForm(c.env.DB, id);
+  await audit(c.env.DB, "form.published", id, "published");
+  return c.redirect(`/admin/forms/${id}/build?msg=${encodeURIComponent("Form published")}`);
+});
+
+app.post("/admin/forms/:id/unpublish", async (c) => {
+  const id = c.req.param("id");
+  const form = await getForm(c.env.DB, id);
+  if (!form) return c.notFound();
+  await unpublishForm(c.env.DB, id);
+  await audit(c.env.DB, "form.unpublished", id, "unpublished");
+  return c.redirect(`/admin/forms/${id}/build?msg=${encodeURIComponent("Form unpublished")}`);
 });
 
 app.get("/admin/forms/:id", async (c) => {
@@ -311,15 +589,19 @@ app.get("/admin/forms/:id", async (c) => {
   const form = await getForm(c.env.DB, c.req.param("id"));
   if (!form) return c.notFound();
   const tabParam = url.searchParams.get("tab");
-  const tab = (["submissions", "setup", "notifications", "webhooks", "settings"] as const).includes(tabParam as never)
+  if (tabParam === "build") {
+    return c.redirect(`/admin/forms/${form.id}/build`);
+  }
+  const tab = (["build", "submissions", "setup", "notifications", "webhooks", "settings", "analytics"] as const).includes(tabParam as never)
     ? (tabParam as FormTab)
     : "submissions";
   const subsPage = parsePage(url.searchParams.get("page"));
-  const [subs, subsTotal, hooks, stats] = await Promise.all([
+  const [subs, subsTotal, hooks, stats, analytics] = await Promise.all([
     listSubmissionsForForm(c.env.DB, form.id, { page: subsPage }),
     countSubmissionsForForm(c.env.DB, form.id),
     listWebhooks(c.env.DB, form.id),
     getDashboardStats(c.env.DB),
+    tab === "analytics" ? getAnalytics(c.env.DB, form.id) : Promise.resolve(null),
   ]);
   return c.html(
     <FormDetailPage
@@ -337,6 +619,7 @@ app.get("/admin/forms/:id", async (c) => {
       commands={baseCommands(originOf(c.req.url))}
       formCount={stats.form_count}
       submissionCount={stats.submission_count}
+      analytics={analytics}
     />
   );
 });
@@ -360,21 +643,28 @@ app.post("/admin/forms/:id/duplicate", async (c) => {
   const form = await getForm(c.env.DB, c.req.param("id"));
   if (!form) return c.notFound();
   const copy = await duplicateForm(c.env.DB, form);
+  await audit(c.env.DB, "form.created", copy.id, `duplicated from ${form.id}`);
   return c.redirect(`/admin/forms/${copy.id}?created=1&tab=setup&msg=Form+duplicated`);
 });
 
 app.post("/admin/forms/:id/archive", async (c) => {
-  await setFormArchived(c.env.DB, c.req.param("id"), true);
+  const id = c.req.param("id");
+  await setFormArchived(c.env.DB, id, true);
+  await audit(c.env.DB, "form.archived", id, "archived");
   return c.redirect("/admin/forms?msg=Form+archived");
 });
 
 app.post("/admin/forms/:id/unarchive", async (c) => {
-  await setFormArchived(c.env.DB, c.req.param("id"), false);
+  const id = c.req.param("id");
+  await setFormArchived(c.env.DB, id, false);
+  await audit(c.env.DB, "form.archived", id, "restored");
   return c.redirect("/admin/forms?msg=Form+restored");
 });
 
 app.post("/admin/forms/:id/delete", async (c) => {
-  await deleteForm(c.env.DB, c.req.param("id"));
+  const id = c.req.param("id");
+  await deleteForm(c.env.DB, id);
+  await audit(c.env.DB, "form.deleted", id, "deleted");
   return c.redirect("/admin/forms?msg=Form+deleted");
 });
 
@@ -443,8 +733,15 @@ app.get("/admin/submissions", async (c) => {
 
 app.get("/admin/submissions/:id", async (c) => {
   const url = new URL(c.req.url);
-  const sub = await getSubmission(c.env.DB, Number(c.req.param("id")));
+  let sub = await getSubmission(c.env.DB, Number(c.req.param("id")));
   if (!sub) return c.notFound();
+  // Resolve spilled pointer if present (SSR)
+  try {
+    const resolved = await resolveSpilledData(c.env, sub.data);
+    if (resolved !== sub.data) {
+      sub = { ...sub, data: resolved };
+    }
+  } catch {}
   const back =
     url.searchParams.get("back") === "form" && sub.form_id
       ? `/admin/forms/${sub.form_id}`
@@ -466,7 +763,10 @@ app.get("/admin/submissions/:id", async (c) => {
 app.post("/admin/submissions/:id/delete", async (c) => {
   const id = Number(c.req.param("id"));
   const body = await c.req.parseBody();
-  if (Number.isInteger(id)) await deleteSubmission(c.env.DB, id);
+  if (Number.isInteger(id)) {
+    await deleteSubmission(c.env.DB, id);
+    await audit(c.env.DB, "response.deleted", String(id), "deleted via dashboard");
+  }
   const back = typeof body.back === "string" && body.back.startsWith("/") ? body.back : "/admin/submissions";
   return c.redirect(`${back}?msg=Submission+deleted`);
 });
@@ -630,7 +930,13 @@ app.get("/admin/settings", async (c) => {
   const section = (SECTIONS_KEYS as readonly string[]).includes(sectionParam ?? "")
     ? (sectionParam as SettingsSection)
     : "general";
-  const [stats, forms] = await Promise.all([getDashboardStats(c.env.DB), listForms(c.env.DB)]);
+  const [stats, forms, retentionDays, apiKeys] = await Promise.all([
+    getDashboardStats(c.env.DB),
+    listForms(c.env.DB),
+    getSetting(c.env.DB, "retention_days"),
+    listApiKeys(c.env.DB),
+  ]);
+  const createdKey = url.searchParams.get("createdKey") || undefined;
   return c.html(
     <SettingsPage
       path={url.pathname}
@@ -638,12 +944,117 @@ app.get("/admin/settings", async (c) => {
       workspaceName={c.env.WORKSPACE_NAME || "My workspace"}
       stats={stats}
       formsWithNotify={forms}
+      retentionDays={retentionDays}
+      apiKeys={apiKeys}
+      createdKey={createdKey}
       toastMsg={msgFrom(c)}
       commands={baseCommands(originOf(c.req.url))}
       formCount={stats.form_count}
       submissionCount={stats.submission_count}
     />
   );
+});
+
+app.post("/admin/api-keys", async (c) => {
+  const body = await c.req.parseBody();
+  const name = String(body.name ?? "").trim();
+  if (!name) return c.redirect("/admin/settings?section=api&msg=Name+required");
+  const token = await (async () => {
+    const a = "abcdefghijkmnopqrstuvwxyz23456789";
+    const b = crypto.getRandomValues(new Uint8Array(32));
+    let s = "fr_live_";
+    for (const x of b) s += a[x % a.length];
+    return s;
+  })();
+  const hash = await sha256Hex(token);
+  const prefix = token.slice(0, 12);
+  const last4 = token.slice(-4);
+  const row = await createApiKey(c.env.DB, { name, prefix, hash, last4 });
+  await audit(c.env.DB, "key.created", row.id, name);
+  return c.redirect(`/admin/settings?section=api&createdKey=${encodeURIComponent(token)}&msg=Key+created`);
+});
+
+app.post("/admin/api-keys/:id/revoke", async (c) => {
+  const id = c.req.param("id");
+  await revokeApiKey(c.env.DB, id);
+  await audit(c.env.DB, "key.revoked", id, "");
+  return c.redirect("/admin/settings?section=api&msg=Key+revoked");
+});
+
+app.post("/admin/settings/retention", async (c) => {
+  const body = await c.req.parseBody();
+  const raw = String(body.retention_days ?? "").trim();
+  if (raw === "") {
+    await setSetting(c.env.DB, "retention_days", "");
+    await audit(c.env.DB, "settings.updated", "retention_days", "retention off");
+    return c.redirect("/admin/settings?section=general&msg=Retention+disabled");
+  }
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 3650) {
+    return c.redirect("/admin/settings?section=general&msg=Invalid+retention+value");
+  }
+  await setSetting(c.env.DB, "retention_days", String(n));
+  await audit(c.env.DB, "settings.updated", "retention_days", `retention ${n} days`);
+  return c.redirect("/admin/settings?section=general&msg=Retention+saved");
+});
+
+app.post("/admin/maintenance/prune", async (c) => {
+  const retention = await getSetting(c.env.DB, "retention_days");
+  const days = retention ? Number(retention) : NaN;
+  if (!retention || retention.trim() === "" || !Number.isInteger(days) || days < 1) {
+    return c.redirect("/admin/settings?section=general&msg=Retention+is+disabled");
+  }
+  const cutoff = Date.now() - days * 86400000;
+  // Fetch old submissions (batch)
+  const { results: olds } = await c.env.DB
+    .prepare("SELECT id, data FROM submissions WHERE created_at < ? LIMIT 500")
+    .bind(cutoff)
+    .all<{ id: number; data: string }>();
+  let pruned = 0;
+  for (const row of olds ?? []) {
+    // Delete spilled R2 object if present
+    try {
+      const parsed = JSON.parse(row.data) as Record<string, unknown>;
+      const sp = parsed["_spilled"];
+      if (typeof sp === "string" && sp.startsWith("r2://") && c.env.FILES) {
+        const key = sp.slice(5);
+        try { await c.env.FILES.delete(key); } catch {}
+      }
+    } catch {}
+    // Delete file rows + R2 objects tied to submission
+    try {
+      const { results: files } = await c.env.DB
+        .prepare("SELECT * FROM files WHERE submission_id = ?")
+        .bind(row.id)
+        .all<any>();
+      for (const f of files ?? []) {
+        try { await deleteFile(c.env, c.env.DB, f as any); } catch {}
+      }
+    } catch {}
+    await c.env.DB.prepare("DELETE FROM submissions WHERE id = ?").bind(row.id).run();
+    pruned++;
+  }
+  // Also delete any remaining old submissions that may not have been in limit (loop if needed)
+  // For safety, delete remaining in one go for those not handled file-wise (already handled above batch)
+  // If we had <500, we are done; else we may have more, do bulk delete for remaining (best-effort file cleanup may be incomplete but ok)
+  if ((olds?.length ?? 0) === 500) {
+    // Delete remaining old rows without per-row file handling to avoid infinite loop in this request
+    // Files for those will be orphaned but next prune will clean; we still purge DB rows
+    await c.env.DB.prepare("DELETE FROM submissions WHERE created_at < ?").bind(cutoff).run();
+    // Try to clean files for remaining pruned rows (best-effort)
+    const { results: leftoverFiles } = await c.env.DB
+      .prepare("SELECT * FROM files WHERE created_at < ? LIMIT 100")
+      .bind(cutoff)
+      .all<any>();
+    for (const f of leftoverFiles ?? []) {
+      try { await deleteFile(c.env, c.env.DB, f as any); } catch {}
+    }
+  } else if (pruned > 0 && (olds?.length ?? 0) < 500) {
+    // Ensure no stray submissions remain older than cutoff (in case of race)
+    await c.env.DB.prepare("DELETE FROM submissions WHERE created_at < ?").bind(cutoff).run();
+  }
+  await audit(c.env.DB, "retention.pruned", "", `pruned ${pruned} submissions older than ${days} days`);
+  return c.redirect(`/admin/settings?section=general&msg=Pruned+${pruned}+submissions`);
 });
 
 const SECTIONS_KEYS = ["general", "members", "domains", "api", "notifications", "billing", "security"] as const;

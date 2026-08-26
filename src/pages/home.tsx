@@ -3,9 +3,10 @@ import { AppShell } from "../ui/shell";
 import { PageHead, StatBlock, Button } from "../ui/components";
 import { IconPlus, IconForm } from "../ui/icons";
 import { FormWithStats, SubmissionWithContext, DashboardStats } from "../types";
-import { fmtNumber, relTime, submissionRef } from "../util";
-import { SubmissionTable, parseData, senderOf } from "./shared";
+import { fmtNumber, relTime } from "../util";
+import { SubmissionTable } from "./shared";
 import { StatusBadge } from "../ui/components";
+import { DashboardAnalytics } from "../db";
 
 export const HomePage: FC<{
   path: string;
@@ -14,7 +15,8 @@ export const HomePage: FC<{
   recent: SubmissionWithContext[];
   toastMsg?: string;
   commands: { label: string; href: string; icon: string; keywords?: string }[];
-}> = ({ path, stats, forms, recent, toastMsg, commands }) => {
+  sparkline?: DashboardAnalytics | null;
+}> = ({ path, stats, forms, recent, toastMsg, commands, sparkline }) => {
   const isNew = stats.form_count === 0 && recent.length === 0;
 
   return (
@@ -60,6 +62,7 @@ export const HomePage: FC<{
             <StatBlock label="Submissions" value={fmtNumber(stats.submission_count)} />
             <StatBlock label="This month" value={fmtNumber(stats.month_count)} />
           </div>
+          {sparkline ? <SparklineCard daily={sparkline.daily} /> : null}
 
           {forms.length ? (
             <>
@@ -108,5 +111,38 @@ export const HomePage: FC<{
         </>
       )}
     </AppShell>
+  );
+};
+
+const SparklineCard: FC<{ daily: { date: string; count: number }[] }> = ({ daily }) => {
+  const w = 300;
+  const h = 40;
+  const pad = 2;
+  const max = Math.max(...daily.map((d) => d.count), 1);
+  const points = daily
+    .map((d, i) => {
+      const x = (i / Math.max(1, daily.length - 1)) * (w - pad * 2) + pad;
+      const y = h - pad - (d.count / max) * (h - pad * 2) - 2;
+      return `${x},${y}`;
+    })
+    .join(" ");
+  const areaPoints = `${pad},${h - pad} ${points} ${w - pad},${h - pad}`;
+  return (
+    <div class="card card-b mb16" style="padding:10px 14px">
+      <div class="flex between mb8">
+        <span class="small" style="font-weight:600">14-day trend</span>
+        <span class="muted small">{daily[0]?.date.slice(5)} → {daily[daily.length - 1]?.date.slice(5)}</span>
+      </div>
+      <svg viewBox={`0 0 ${w} ${h}`} width={w} height={h} role="img" aria-label="14-day submission sparkline" style="display:block;max-width:100%">
+        <polygon points={areaPoints} fill="var(--accent-tint)" opacity="0.6" />
+        <polyline points={points} fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+        {daily.map((d, i) => {
+          if (d.count === 0) return null;
+          const x = (i / Math.max(1, daily.length - 1)) * (w - pad * 2) + pad;
+          const y = h - pad - (d.count / max) * (h - pad * 2) - 2;
+          return <circle cx={x} cy={y} r="1.6" fill="var(--accent)" />;
+        })}
+      </svg>
+    </div>
   );
 };
