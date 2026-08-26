@@ -21,7 +21,7 @@ function randomSecret(): string {
 
 export async function createForm(
   db: D1Database,
-  fields: { name: string; redirect_url?: string; notify_email?: string; schemaJson?: string | null }
+  fields: { name: string; redirect_url?: string; notify_email?: string; schemaJson?: string | null; slug?: string | null }
 ): Promise<FormRow> {
   const row: FormRow = {
     id: randomId(10),
@@ -35,16 +35,36 @@ export async function createForm(
     status: "draft",
     views: 0,
     created_at: Date.now(),
+    slug: fields.slug ?? null,
+    theme_json: null,
+    open_at: null,
+    close_at: null,
+    submission_limit: null,
+    closed_message: "",
+    one_per_respondent: 0,
   };
   await db
-    .prepare("INSERT INTO forms (id, name, redirect_url, notify_email, auto_reply, archived, schema_json, published_json, status, views, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-    .bind(row.id, row.name, row.redirect_url, row.notify_email, row.auto_reply, row.archived, row.schema_json, row.published_json, row.status, row.views, row.created_at)
+    .prepare("INSERT INTO forms (id, name, redirect_url, notify_email, auto_reply, archived, schema_json, published_json, status, views, created_at, slug, theme_json, open_at, close_at, submission_limit, closed_message, one_per_respondent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .bind(row.id, row.name, row.redirect_url, row.notify_email, row.auto_reply, row.archived, row.schema_json, row.published_json, row.status, row.views, row.created_at, row.slug ?? null, row.theme_json ?? null, row.open_at ?? null, row.close_at ?? null, row.submission_limit ?? null, row.closed_message ?? "", row.one_per_respondent ?? 0)
     .run();
   return row;
 }
 
 export async function duplicateForm(db: D1Database, source: FormRow): Promise<FormRow> {
   return createForm(db, { name: `${source.name} (copy)`, redirect_url: source.redirect_url, schemaJson: source.schema_json });
+}
+
+export async function getFormBySlug(db: D1Database, slug: string): Promise<FormRow | null> {
+  return await db.prepare("SELECT * FROM forms WHERE slug = ? AND archived = 0").bind(slug).first<FormRow>();
+}
+
+export async function updateFormShare(db: D1Database, id: string, fields: { slug: string; open_at: number | null; close_at: number | null; submission_limit: number | null; closed_message: string; one_per_respondent: number }): Promise<void> {
+  await db.prepare("UPDATE forms SET slug = ?, open_at = ?, close_at = ?, submission_limit = ?, closed_message = ?, one_per_respondent = ? WHERE id = ?")
+    .bind(fields.slug || null, fields.open_at, fields.close_at, fields.submission_limit, fields.closed_message, fields.one_per_respondent, id).run();
+}
+
+export async function updateFormTheme(db: D1Database, id: string, themeJson: string): Promise<void> {
+  await db.prepare("UPDATE forms SET theme_json = ? WHERE id = ?").bind(themeJson, id).run();
 }
 export async function updateFormSchema(db: D1Database, id: string, schemaJson: string): Promise<void> {
   await db.prepare("UPDATE forms SET schema_json = ? WHERE id = ?").bind(schemaJson, id).run();
@@ -124,11 +144,50 @@ export async function insertSubmission(
   referer: string,
   isSpam: boolean
 ): Promise<number | null> {
+  const now = Date.now();
   const result = await db
-    .prepare("INSERT INTO submissions (form_id, data, ip, user_agent, referer, is_spam, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .bind(formId, JSON.stringify(data), ip, userAgent, referer, isSpam ? 1 : 0, Date.now())
+    .prepare("INSERT INTO submissions (form_id, data, ip, user_agent, referer, is_spam, created_at, status, completed_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .bind(formId, JSON.stringify(data), ip, userAgent, referer, isSpam ? 1 : 0, now, isSpam ? "spam" : "completed", isSpam ? null : now, now)
     .run();
   return result.meta?.last_row_id ?? null;
+}
+
+export async function insertPartialSubmission(
+  db: D1Database,
+  formId: string,
+  data: Record<string, unknown>,
+  ip: string,
+  userAgent: string,
+  referer: string,
+  tokenHash: string,
+  expiresAt: number,
+): Promise<number | null> {
+  const now = Date.now();
+  const result = await db.prepare(
+    "INSERT INTO submissions (form_id, data, ip, user_agent, referer, is_spam, created_at, status, resume_token_hash, resume_expires_at, resume_revoked, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?, 'partial', ?, ?, 0, ?)"
+  ).bind(formId, JSON.stringify(data), ip, userAgent, referer, now, tokenHash, expiresAt, now).run();
+  return result.meta?.last_row_id ?? null;
+}
+
+export async function getSubmissionByResumeHash(db: D1Database, tokenHash: string): Promise<SubmissionRow | null> {
+  return await db.prepare("SELECT * FROM submissions WHERE resume_token_hash = ? AND resume_revoked = 0 AND resume_expires_at > ? AND status = 'partial'")
+    .bind(tokenHash, Date.now()).first<SubmissionRow>();
+}
+
+export async function updatePartialSubmission(db: D1Database, id: number, data: Record<string, unknown>): Promise<void> {
+  await db.prepare("UPDATE submissions SET data = ?, updated_at = ? WHERE id = ? AND status = 'partial' AND resume_revoked = 0")
+    .bind(JSON.stringify(data), Date.now(), id).run();
+}
+
+export async function completeSubmission(db: D1Database, id: number, data: Record<string, unknown>): Promise<void> {
+  const now = Date.now();
+  await db.prepare("UPDATE submissions SET data = ?, status = 'completed', completed_at = ?, updated_at = ?, resume_revoked = 1 WHERE id = ? AND status = 'partial' AND resume_revoked = 0")
+    .bind(JSON.stringify(data), now, now, id).run();
+}
+
+export async function countCompletedForForm(db: D1Database, formId: string): Promise<number> {
+  const row = await db.prepare("SELECT COUNT(*) AS n FROM submissions WHERE form_id = ? AND status = 'completed' AND is_spam = 0").bind(formId).first<{ n: number }>();
+  return row?.n ?? 0;
 }
 
 export const SUBMISSIONS_PAGE_SIZE = 25;
@@ -211,7 +270,7 @@ export async function deleteSubmission(db: D1Database, id: number): Promise<void
 }
 
 export async function setSubmissionSpam(db: D1Database, id: number, isSpam: boolean): Promise<void> {
-  await db.prepare("UPDATE submissions SET is_spam = ? WHERE id = ?").bind(isSpam ? 1 : 0, id).run();
+  await db.prepare("UPDATE submissions SET is_spam = ?, status = ?, updated_at = ? WHERE id = ?").bind(isSpam ? 1 : 0, isSpam ? "spam" : "completed", Date.now(), id).run();
 }
 
 export async function countRecentByIp(db: D1Database, ip: string, sinceMs: number): Promise<number> {

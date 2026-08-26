@@ -7,6 +7,11 @@ export type Bindings = {
   TURNSTILE_SECRET_KEY?: string;
   WORKSPACE_NAME?: string;
   FILES?: R2Bucket;
+  PREFILL_SECRET?: string;
+  STRIPE_SECRET_KEY?: string;
+  STRIPE_WEBHOOK_SECRET?: string;
+  AI_API_KEY?: string;
+  AI_MODEL?: string;
 };
 
 export type FormRow = {
@@ -21,7 +26,16 @@ export type FormRow = {
   status: string;
   views: number;
   created_at: number;
+  slug?: string | null;
+  theme_json?: string | null;
+  open_at?: number | null;
+  close_at?: number | null;
+  submission_limit?: number | null;
+  closed_message?: string | null;
+  one_per_respondent?: number;
 };
+
+export type SubmissionStatus = "in_progress" | "partial" | "completed" | "abandoned" | "spam" | "deleted";
 
 export type SubmissionRow = {
   id: number;
@@ -32,6 +46,12 @@ export type SubmissionRow = {
   referer: string;
   is_spam: number;
   created_at: number;
+  status?: SubmissionStatus | string;
+  resume_token_hash?: string | null;
+  resume_expires_at?: number | null;
+  resume_revoked?: number;
+  completed_at?: number | null;
+  updated_at?: number;
 };
 
 export type WebhookRow = {

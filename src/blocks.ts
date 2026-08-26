@@ -1,5 +1,6 @@
 import { Child } from "hono/jsx";
 
+export type VariableType = "number" | "text" | "bool" | "date" | "currency";
 export type BlockType =
   | "short_text"
   | "long_text"
@@ -16,7 +17,8 @@ export type BlockType =
   | "file"
   | "heading"
   | "paragraph"
-  | "divider";
+  | "divider"
+  | "page";
 
 export type Block = {
   id: string;
@@ -29,34 +31,138 @@ export type Block = {
   min?: number | null;
   max?: number | null;
   multiple?: boolean;
+  page_id?: string;
+  variable?: string;
+  calculation?: string;
+  accept?: string;
+  maxSize?: number | null;
 };
 
 export type FormSettings = {
   submitText: string;
   successMessage: string;
   redirectUrl: string;
+  progressStyle?: "bar" | "steps" | "none";
+  conversational?: boolean;
 };
 
-export type FormSchema = {
+export type FormPage = { id: string; title: string; description?: string };
+export type FormVariable = {
+  id: string;
+  name: string;
+  type: VariableType;
+  defaultValue?: string | number | boolean | null;
+  expression?: string;
+};
+
+export type LogicSource = "answer" | "var" | "url" | "meta";
+export type LogicOperator =
+  | "equals"
+  | "not_equals"
+  | "contains"
+  | "gt"
+  | "lt"
+  | "gte"
+  | "lte"
+  | "is_empty"
+  | "is_not_empty"
+  | "includes_any"
+  | "includes_all";
+export type LogicCondition = {
+  source: LogicSource;
+  key: string;
+  operator: LogicOperator;
+  value?: string | number | boolean | string[];
+};
+export type LogicGroup = { match: "all" | "any"; conditions: LogicCondition[] };
+export type LogicAction =
+  | { type: "show" | "hide" | "require"; target: string; value?: boolean }
+  | { type: "show-section" | "hide-section"; target: string }
+  | { type: "jump-to-page"; target: string }
+  | { type: "jump-to-ending"; target: string }
+  | { type: "redirect"; target: string }
+  | { type: "set-variable"; target: string; value: string };
+export type LogicRule = {
+  id: string;
+  match: "all" | "any";
+  conditions: LogicCondition[];
+  actions: LogicAction[];
+};
+export type LLogicRule = LogicRule;
+export type FormEnding = { id: string; title: string; message: string; redirectUrl?: string; conditions?: LogicGroup[] };
+
+export type FormSchemaV1 = {
   version: 1;
   blocks: Block[];
   settings: FormSettings;
 };
 
-export function defaultSettings(): FormSettings {
-  return { submitText: "Submit", successMessage: "", redirectUrl: "" };
+export type FormSchemaV2 = {
+  version: 2;
+  blocks: Block[];
+  settings: FormSettings;
+  pages: FormPage[];
+  variables: FormVariable[];
+  logic: LogicRule[];
+  endings: FormEnding[];
+};
+
+export type FormSchema = FormSchemaV1 | FormSchemaV2;
+
+export function isSchemaV2(schema: FormSchema | null | undefined): schema is FormSchemaV2 {
+  return !!schema && schema.version === 2;
 }
 
-export function emptySchema(): FormSchema {
-  return { version: 1, blocks: [], settings: defaultSettings() };
+export function defaultSettings(): FormSettings {
+  return { submitText: "Submit", successMessage: "", redirectUrl: "", progressStyle: "bar", conversational: false };
+}
+
+export function emptySchema(): FormSchemaV2 {
+  return { version: 2, blocks: [], settings: defaultSettings(), pages: [{ id: "page_1", title: "Page 1" }], variables: [], logic: [], endings: [] };
+}
+
+function normalizeV2(o: Record<string, unknown>): FormSchemaV2 {
+  const rawSettings = typeof o.settings === "object" && o.settings !== null ? o.settings as Record<string, unknown> : {};
+  const pages = Array.isArray(o.pages) ? o.pages.filter((p): p is Record<string, unknown> => typeof p === "object" && p !== null).map((p, i) => ({
+    id: typeof p.id === "string" && p.id ? p.id : `page_${i + 1}`,
+    title: typeof p.title === "string" && p.title ? p.title : `Page ${i + 1}`,
+    description: typeof p.description === "string" ? p.description : undefined,
+  })) : [];
+  return {
+    version: 2,
+    blocks: Array.isArray(o.blocks) ? o.blocks as Block[] : [],
+    settings: {
+      ...defaultSettings(),
+      submitText: typeof rawSettings.submitText === "string" ? rawSettings.submitText : "Submit",
+      successMessage: typeof rawSettings.successMessage === "string" ? rawSettings.successMessage : "",
+      redirectUrl: typeof rawSettings.redirectUrl === "string" ? rawSettings.redirectUrl : "",
+      progressStyle: rawSettings.progressStyle === "steps" || rawSettings.progressStyle === "none" ? rawSettings.progressStyle : "bar",
+      conversational: rawSettings.conversational === true,
+    },
+    pages: pages.length > 0 ? pages as FormPage[] : [{ id: "page_1", title: "Page 1" }],
+    variables: Array.isArray(o.variables) ? o.variables as FormVariable[] : [],
+    logic: Array.isArray(o.logic) ? o.logic as LogicRule[] : [],
+    endings: Array.isArray(o.endings) ? o.endings as FormEnding[] : [],
+  };
 }
 
 export function parseSchema(raw: string | null | undefined): FormSchema | null {
   if (!raw) return null;
   try {
-    const o = JSON.parse(raw);
-    if (o.version !== 1 || !Array.isArray(o.blocks)) return null;
-    return o as FormSchema;
+    const o = JSON.parse(raw) as Record<string, unknown>;
+    if (!Array.isArray(o.blocks)) return null;
+    if (o.version === 1) {
+      return {
+        version: 1,
+        blocks: o.blocks as Block[],
+        settings: {
+          ...defaultSettings(),
+          ...(typeof o.settings === "object" && o.settings !== null ? o.settings as FormSettings : {}),
+        },
+      };
+    }
+    if (o.version === 2) return normalizeV2(o);
+    return null;
   } catch { return null; }
 }
 
@@ -74,32 +180,34 @@ export const BLOCK_DEFS: Record<BlockType, { label: string; group: "Basic" | "Ch
   email: { label: "Email", group: "Basic", icon: "M4 4h16v16H4z M4 7l8 6 8-6" },
   number: { label: "Number", group: "Basic", icon: "M7 20l5-16 5 16M9 14h10" },
   phone: { label: "Phone", group: "Basic", icon: "M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z M12 17h.01" },
-  url: { label: "URL", group: "Basic", icon: "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71 M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" },
+  url: { label: "URL", group: "Basic", icon: "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 1 0-7.07-7.07l-1.72 1.71 M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 1 0 7.07 7.07l1.71-1.71" },
   date: { label: "Date", group: "Basic", icon: "M8 2v4 M16 2v4 M3 8h18 M3 4h18v16a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4z" },
   select: { label: "Dropdown", group: "Choice", icon: "M6 9l6 6 6-6" },
-  radio: { label: "Single choice", group: "Choice", icon: "M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0-18 0 M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0-6 0" },
+  radio: { label: "Single choice", group: "Choice", icon: "M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 0 0-18 0 M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 0 0-6 0" },
   checkbox_choice: { label: "Multiple choice", group: "Choice", icon: "M9 11l3 3L22 4 M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" },
   checkbox: { label: "Checkbox (consent)", group: "Choice", icon: "M9 11l3 3L22 4" },
-  rating: { label: "Rating 1–5", group: "Choice", icon: "M12 2l3 5h6l-5 4 2 6-6-4-6 4 2-6-5-4h6z" },
+  rating: { label: "Rating 1–5", group: "Choice", icon: "M12 2l3 5h6l-5 4 2 6-6-4-6 4h6z" },
   file: { label: "File upload", group: "Advanced", icon: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6" },
   heading: { label: "Heading", group: "Content", icon: "M4 6h16M4 12h10M4 18h13" },
   paragraph: { label: "Paragraph", group: "Content", icon: "M3 6h18M7 12h14M7 18h14" },
   divider: { label: "Divider", group: "Content", icon: "M5 12h14" },
+  page: { label: "Page break", group: "Content", icon: "M4 5h16M4 19h16M8 9l4 3-4 3" },
 };
 
 export function defaultsFor(type: BlockType): Block {
-  const base: Block = { id: genBlockId(), type, label: BLOCK_DEFS[type].label, required: false };
+  const base: Block = { id: genBlockId(), type, label: BLOCK_DEFS[type].label, required: false, page_id: "page_1" };
   if (type === "select" || type === "radio" || type === "checkbox_choice") base.options = ["Option 1", "Option 2"];
   if (type === "file") base.multiple = false;
   if (type === "heading") base.label = "Section heading";
   if (type === "paragraph") base.label = "Add some helpful text for respondents.";
+  if (type === "page") base.label = "Next page";
   return base;
 }
 
 export function validateBlockValue(block: Block, raw: unknown): string | null {
   const v = raw == null ? "" : String(raw).trim();
-  const isEmpty = v === "" || (Array.isArray(raw) && (raw as string[]).length === 0);
-  if (block.type === "heading" || block.type === "divider" || block.type === "paragraph") return null;
+  const isEmpty = v === "" || (Array.isArray(raw) && raw.length === 0);
+  if (block.type === "heading" || block.type === "divider" || block.type === "paragraph" || block.type === "page") return null;
   if (block.required && isEmpty) return "This field is required.";
   if (isEmpty) return null;
   if (block.type === "email" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return "Enter a valid email.";
@@ -121,13 +229,11 @@ export function validateBlockValue(block: Block, raw: unknown): string | null {
     const n = Number(v);
     if (!Number.isInteger(n) || n < 1 || n > 5) return "Rating must be 1–5.";
   }
-  if (block.type === "checkbox" && block.required && v !== "on" && v !== "true" && v !== "1" && v !== "checked") {
-    // browser sends "on" for checked checkbox with no value
-    // isEmpty already handled; here handle explicit unchecked state
-    return "This field is required.";
-  }
+  if (block.type === "checkbox" && block.required && v !== "on" && v !== "true" && v !== "1" && v !== "checked") return "This field is required.";
   return null;
 }
 
-// helper for rendering — returns props for input element
 export function inputName(block: Block): string { return block.id; }
+
+export type BlockRenderer = (block: Block, value: unknown) => Child;
+void (null as unknown as BlockRenderer);

@@ -39,10 +39,19 @@ import {
   createApiKey,
   listApiKeys,
   revokeApiKey,
+  countCompletedForForm,
+  insertPartialSubmission,
+  getSubmissionByResumeHash,
+  updatePartialSubmission,
+  completeSubmission,
+  getFormBySlug,
+  updateFormShare,
+  updateFormTheme,
 } from "./db";
 import apiApp from "./api";
 import { spillIfLarge, resolveSpilledData } from "./spill";
-import { parseSchema, emptySchema, validateBlockValue } from "./blocks";
+import { parseSchema, emptySchema, validateBlockValue, isSchemaV2 } from "./blocks";
+import { evaluateRules, pipeText, validateSchemaV2, resolveVariables } from "./logic";
 import { PublicFormPage } from "./pages/public-form";
 import { BuilderPage } from "./pages/builder";
 import { audit } from "./audit";
@@ -51,6 +60,7 @@ import { checkSpam, normalizePayload } from "./spam";
 import { deliverSubmission, sendTestWebhook } from "./webhooks";
 import { getFiles, countFiles, totalStorage, getFile, saveUpload, deleteFile } from "./files";
 import { CLIENT_JS } from "./ui/client";
+import { CSS } from "./ui/styles";
 import type { CommandItem } from "./ui/shell";
 import { HomePage } from "./pages/home";
 import { FormsPage } from "./pages/forms";
@@ -59,6 +69,7 @@ import { InboxPage } from "./pages/inbox";
 import { SubmissionDetailPage } from "./pages/submission-detail";
 import { WebhooksPage, WebhookDetailPage, ComingSoonPage } from "./pages/webhook-pages";
 import { WorkflowsPage, FilesPage, SettingsPage, SettingsSection, LoginPage, LandingPage } from "./pages/misc";
+import { templateSchema, TemplateKey } from "./templates";
 
 const COOKIE = "fr_session";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -115,6 +126,29 @@ async function sha256Hex(input: string): Promise<string> {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+function newResumeToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(24));
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function valuesFromStored(raw: string): Record<string, string> {
+  try {
+    const data = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(data)) {
+      if (key.startsWith("_")) continue;
+      out[key] = Array.isArray(value) ? value.map(String).join(", ") : value == null ? "" : String(value);
+    }
+    return out;
+  } catch { return {}; }
+}
+
+function urlValues(url: URL): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of url.searchParams.entries()) if (!key.startsWith("_") && key !== "resume") out[key] = value;
+  return out;
+}
+
 function baseCommands(origin: string): CommandItem[] {
   return [
     { label: "New form", href: "/admin/forms?new=1", icon: NAV_ICONS.form, keywords: "create add endpoint" },
@@ -155,6 +189,32 @@ function stripControlFields(data: Record<string, string>): Record<string, string
   return out;
 }
 
+app.post("/f/:id/save", async (c) => {
+  const formId = c.req.param("id");
+  const form = await getForm(c.env.DB, formId);
+  const schema = parseSchema(form?.published_json);
+  if (!form || !schema || !isSchemaV2(schema)) return c.json({ ok: false, error: "Save and resume is not enabled for this form." }, 400);
+  let body: Record<string, unknown> = {};
+  try {
+    const raw = await c.req.json();
+    if (typeof raw === "object" && raw !== null) body = raw as Record<string, unknown>;
+  } catch { return c.json({ ok: false, error: "Invalid JSON." }, 400); }
+  const rawData = typeof body.data === "object" && body.data !== null ? body.data as Record<string, unknown> : {};
+  const data: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(rawData)) if (!key.startsWith("_")) data[key] = value;
+  const suppliedToken = typeof body.token === "string" ? body.token : "";
+  const token = suppliedToken || newResumeToken();
+  const hash = await sha256Hex(token);
+  const ip = c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+  const userAgent = c.req.header("user-agent") || "";
+  const referer = c.req.header("referer") || "";
+  const existing = suppliedToken ? await getSubmissionByResumeHash(c.env.DB, hash) : null;
+  if (existing && existing.form_id !== formId) return c.json({ ok: false, error: "Invalid resume token." }, 403);
+  if (existing) await updatePartialSubmission(c.env.DB, existing.id, data);
+  else await insertPartialSubmission(c.env.DB, formId, data, ip, userAgent, referer, hash, Date.now() + 7 * 24 * 60 * 60 * 1000);
+  return c.json({ ok: true, token });
+});
+
 app.post("/f/:id", async (c) => {
   const formId = c.req.param("id");
   const contentType = c.req.header("content-type") || "";
@@ -162,6 +222,12 @@ app.post("/f/:id", async (c) => {
   const form = await getForm(c.env.DB, formId);
   if (!form) return c.text("Unknown form endpoint", 404);
   if (form.archived) return c.text("This form is no longer accepting submissions.", 410);
+  const requestNow = Date.now();
+  if (form.open_at != null && requestNow < form.open_at) return c.text("This form is not open yet.", 403);
+  if (form.close_at != null && requestNow > form.close_at) return c.text(form.closed_message || "This form is closed.", 410);
+  if (form.submission_limit != null && form.submission_limit > 0 && await countCompletedForForm(c.env.DB, formId) >= form.submission_limit) return c.text(form.closed_message || "This form has reached its submission limit.", 410);
+  const respondentCookie = getCookie(c, `fr_responded_${formId}`);
+  if (form.one_per_respondent === 1 && respondentCookie === "1") return c.text("You have already submitted this form.", 409);
 
   const ct = contentType.toLowerCase();
   let data: Record<string, string> = {};
@@ -244,10 +310,18 @@ app.post("/f/:id", async (c) => {
 
   const schema = parseSchema(form.published_json);
   if (schema) {
+    const smartVariables = isSchemaV2(schema) ? resolveVariables(schema.variables, rawPayload) : {};
+    const smartState = isSchemaV2(schema) ? evaluateRules(schema.logic, {
+      answers: rawPayload,
+      variables: smartVariables,
+      url: Object.fromEntries(new URL(c.req.url).searchParams.entries()),
+      meta: { userAgent: c.req.header("user-agent") || "", referer: c.req.header("referer") || "" },
+    }) : null;
     const errors: Record<string, string> = {};
     const values: Record<string, string> = {};
     for (const block of schema.blocks) {
-      if (block.type === "heading" || block.type === "divider" || block.type === "paragraph") continue;
+      if (block.type === "heading" || block.type === "divider" || block.type === "paragraph" || block.type === "page") continue;
+      if (smartState?.visible[block.id] === false) continue;
       let raw: unknown = rawPayload[block.id];
       if (block.type === "file") {
         const hasFile = uploads.some((u) => u.fieldName === block.id);
@@ -255,7 +329,8 @@ app.post("/f/:id", async (c) => {
         else if (hasFile) raw = "file";
         else raw = "";
       }
-      const err = validateBlockValue(block, raw);
+      const effectiveBlock = smartState?.required[block.id] !== undefined ? { ...block, required: smartState.required[block.id] } : block;
+      const err = validateBlockValue(effectiveBlock, raw);
       if (err) errors[block.id] = err;
       const cur = rawPayload[block.id];
       if (Array.isArray(cur)) values[block.id] = (cur as unknown[]).map(String).join(", ");
@@ -279,7 +354,8 @@ app.post("/f/:id", async (c) => {
     const labels: Record<string, string> = {};
     const stored: Record<string, unknown> = {};
     for (const block of schema.blocks) {
-      if (block.type === "heading" || block.type === "divider" || block.type === "paragraph") continue;
+      if (block.type === "heading" || block.type === "divider" || block.type === "paragraph" || block.type === "page") continue;
+      if (smartState?.visible[block.id] === false) continue;
       const cur = rawPayload[block.id];
       let str = "";
       if (block.type === "file") {
@@ -294,7 +370,7 @@ app.post("/f/:id", async (c) => {
       labels[block.id] = block.label;
     }
     stored["_labels"] = labels;
-    stored["_v"] = 1;
+    stored["_v"] = schema.version;
 
     const ip =
       c.req.header("cf-connecting-ip") ||
@@ -313,10 +389,23 @@ app.post("/f/:id", async (c) => {
     if (rawStoredJson.length > 10000 && c.env.FILES) {
       const spilled = await spillIfLarge(c.env, rawStoredJson);
       if (spilled.startsWith("r2://")) {
-        toStoreSchema = { _spilled: spilled, _labels: labels, _v: 1 };
+        toStoreSchema = { _spilled: spilled, _labels: labels, _v: schema.version };
       }
     }
-    const submissionId = await insertSubmission(c.env.DB, formId, toStoreSchema, ip, userAgent, referer, verdict.spam);
+    const resumeToken = typeof rawPayload._resume === "string" ? rawPayload._resume : "";
+    let submissionId: number | null = null;
+    if (!verdict.spam && resumeToken) {
+      const existing = await getSubmissionByResumeHash(c.env.DB, await sha256Hex(resumeToken));
+      if (existing && existing.form_id === formId) {
+        await completeSubmission(c.env.DB, existing.id, toStoreSchema);
+        submissionId = existing.id;
+      } else {
+        submissionId = await insertSubmission(c.env.DB, formId, toStoreSchema, ip, userAgent, referer, verdict.spam);
+      }
+    } else {
+      submissionId = await insertSubmission(c.env.DB, formId, toStoreSchema, ip, userAgent, referer, verdict.spam);
+    }
+    if (!verdict.spam && form.one_per_respondent === 1) setCookie(c, `fr_responded_${formId}`, "1", { httpOnly: true, sameSite: "Lax", path: `/f/${formId}`, maxAge: 31536000 });
     if (c.env.FILES && uploads.length > 0 && !verdict.spam) {
       const env = c.env;
       c.executionCtx.waitUntil(
@@ -340,10 +429,12 @@ app.post("/f/:id", async (c) => {
       );
     }
     if (isJson) return c.json({ ok: true });
-    const redirect = data._redirect || form.redirect_url || schema.settings.redirectUrl;
+    const pipeContext = { answers: rawPayload, variables: smartVariables, url: Object.fromEntries(new URL(c.req.url).searchParams.entries()), meta: {} };
+    const dynamicRedirect = isSchemaV2(schema) && smartState?.redirect ? smartState.redirect : "";
+    const redirect = data._redirect || dynamicRedirect || form.redirect_url || pipeText(schema.settings.redirectUrl, pipeContext);
     if (redirect) return c.redirect(redirect, 303);
     if (schema.settings.successMessage && schema.settings.successMessage.trim() !== "") {
-      const msg = schema.settings.successMessage;
+      const msg = pipeText(schema.settings.successMessage, pipeContext);
       const safe = escapeHtml(msg);
       return c.html(
         `<!doctype html><body style="font-family:system-ui,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;background:#fff;color:#37352f"><div style="text-align:center;max-width:520px;padding:24px"><div style="font-size:34px;margin-bottom:8px">&#10003;</div><h1 style="font-size:20px;font-weight:600">Thank you!</h1><p style="color:#37352f;font-size:14px;margin-top:8px;white-space:pre-wrap">${safe}</p></div></body>`
@@ -418,10 +509,19 @@ app.post("/f/:id", async (c) => {
   );
 });
 
+app.get("/s/:slug", async (c) => {
+  const form = await getFormBySlug(c.env.DB, c.req.param("slug"));
+  if (!form) return c.text("Unknown form", 404);
+  return c.redirect(`/f/${form.id}${new URL(c.req.url).search}`, 302);
+});
+
 app.get("/f/:id", async (c) => {
   const form = await getForm(c.env.DB, c.req.param("id"));
   if (!form) return c.text("Unknown form endpoint", 404);
   if (form.archived) return c.text("This form is no longer accepting submissions.", 410);
+  const now = Date.now();
+  const closed = (form.open_at != null && now < form.open_at) || (form.close_at != null && now > form.close_at) || (form.submission_limit != null && form.submission_limit > 0 && await countCompletedForForm(c.env.DB, form.id) >= form.submission_limit) || (form.one_per_respondent === 1 && getCookie(c, `fr_responded_${form.id}`) === "1");
+  if (closed) return c.html(<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><style dangerouslySetInnerHTML={{ __html: CSS }} /></head><body><main style="max-width:640px;margin:12vh auto;padding:32px;text-align:center;font-family:system-ui"><h1>{form.closed_message || "This form is closed."}</h1><p>Please contact the form owner if you need assistance.</p></main></body></html>, 410);
   const accept = c.req.header("accept") ?? "";
   const isHtml = !accept || accept.includes("text/html") || accept.includes("*/*");
   const wantsJsonExplicit = accept.includes("application/json") && !accept.includes("text/html");
@@ -429,9 +529,15 @@ app.get("/f/:id", async (c) => {
     return c.text("This endpoint accepts POST submissions only.", 405);
   }
   const schema = parseSchema(form.published_json);
+  let values = urlValues(new URL(c.req.url));
+  const resume = new URL(c.req.url).searchParams.get("resume");
+  if (resume) {
+    const partial = await getSubmissionByResumeHash(c.env.DB, await sha256Hex(resume));
+    if (partial && partial.form_id === form.id) values = { ...values, ...valuesFromStored(partial.data) };
+  }
   c.executionCtx.waitUntil(incrementFormViews(c.env.DB, form.id));
   const origin = originOf(c.req.url);
-  return c.html(<PublicFormPage form={form} schema={schema} origin={origin} />);
+  return c.html(<PublicFormPage form={form} schema={schema} origin={origin} values={values} />);
 });
 
 /* ---------- auth ---------- */
@@ -522,7 +628,10 @@ app.get("/admin/forms", async (c) => {
 app.post("/admin/forms", async (c) => {
   const body = await c.req.parseBody();
   const name = String(body.name ?? "").trim() || "Untitled form";
-  const row = await createForm(c.env.DB, { name });
+  const rawTemplate = String(body.template ?? "blank");
+  const templateKey: TemplateKey = ["blank", "contact", "feedback", "job", "rsvp", "nps", "project", "registration", "consent"].includes(rawTemplate) ? rawTemplate as TemplateKey : "blank";
+  const schemaJson = templateKey === "blank" ? null : JSON.stringify(templateSchema(templateKey));
+  const row = await createForm(c.env.DB, { name, schemaJson });
   await audit(c.env.DB, "form.created", row.id, name);
   return c.redirect(`/admin/forms/${row.id}?tab=setup&created=1&msg=Form+created`);
 });
@@ -570,6 +679,11 @@ app.post("/admin/forms/:id/publish", async (c) => {
   const id = c.req.param("id");
   const form = await getForm(c.env.DB, id);
   if (!form) return c.notFound();
+  const draft = parseSchema(form.schema_json);
+  if (draft && isSchemaV2(draft)) {
+    const validation = validateSchemaV2(draft);
+    if (validation.errors.length > 0) return c.redirect(`/admin/forms/${id}/build?msg=${encodeURIComponent(`Cannot publish: ${validation.errors.join(" ")}`)}`);
+  }
   await publishForm(c.env.DB, id);
   await audit(c.env.DB, "form.published", id, "published");
   return c.redirect(`/admin/forms/${id}/build?msg=${encodeURIComponent("Form published")}`);
@@ -637,6 +751,41 @@ app.post("/admin/forms/:id/settings", async (c) => {
   const qs = new URLSearchParams({ msg: "Settings saved" });
   if (tab) qs.set("tab", tab);
   return c.redirect(`/admin/forms/${id}?${qs.toString()}`);
+});
+
+app.post("/admin/forms/:id/share", async (c) => {
+  const id = c.req.param("id");
+  const form = await getForm(c.env.DB, id);
+  if (!form) return c.notFound();
+  const body = await c.req.parseBody();
+  const slug = String(body.slug ?? "").trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+  const parseDate = (value: unknown): number | null => { const raw = String(value ?? "").trim(); if (!raw) return null; const parsed = Date.parse(raw); return Number.isFinite(parsed) ? parsed : null; };
+  const rawLimit = Number(body.submission_limit ?? "");
+  const submissionLimit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : null;
+  try {
+    await updateFormShare(c.env.DB, id, { slug, open_at: parseDate(body.open_at), close_at: parseDate(body.close_at), submission_limit: submissionLimit, closed_message: String(body.closed_message ?? "").trim().slice(0, 500), one_per_respondent: body.one_per_respondent === "on" ? 1 : 0 });
+  } catch {
+    return c.redirect(`/admin/forms/${id}?tab=settings&msg=${encodeURIComponent("That slug is already in use")}`);
+  }
+  await audit(c.env.DB, "form.settings.updated", id, "sharing updated");
+  return c.redirect(`/admin/forms/${id}?tab=settings&msg=${encodeURIComponent("Sharing settings saved")}`);
+});
+
+function safeThemeUrl(value: unknown): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  try { const parsed = new URL(raw); return parsed.protocol === "https:" || parsed.protocol === "http:" ? raw : ""; } catch { return ""; }
+}
+
+app.post("/admin/forms/:id/theme", async (c) => {
+  const id = c.req.param("id");
+  if (!await getForm(c.env.DB, id)) return c.notFound();
+  const body = await c.req.parseBody();
+  const radius = Number(body.radius);
+  const theme = { background: String(body.background ?? "").trim().slice(0, 40), text: String(body.text ?? "").trim().slice(0, 40), button: String(body.button ?? "").trim().slice(0, 40), radius: Number.isFinite(radius) ? Math.max(0, Math.min(32, radius)) : 10, logo: safeThemeUrl(body.logo), cover: safeThemeUrl(body.cover) };
+  await updateFormTheme(c.env.DB, id, JSON.stringify(theme));
+  await audit(c.env.DB, "form.settings.updated", id, "theme updated");
+  return c.redirect(`/admin/forms/${id}?tab=settings&msg=${encodeURIComponent("Theme saved")}`);
 });
 
 app.post("/admin/forms/:id/duplicate", async (c) => {

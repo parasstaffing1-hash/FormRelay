@@ -6,6 +6,7 @@ import { IconPlus, IconForm } from "../ui/icons";
 import { FormWithStats } from "../types";
 import { fmtNumber, relTime } from "../util";
 import { CommandItem } from "../ui/shell";
+import { TEMPLATE_OPTIONS } from "../templates";
 
 export const FormsPage: FC<{
   path: string;
@@ -119,8 +120,13 @@ export const FormsPage: FC<{
           <Field label="Form name" forId="nf-name">
             <input class="input" id="nf-name" name="name" placeholder="Contact form" required />
           </Field>
+          <Field label="Start from a template" forId="nf-template">
+            <select class="select" id="nf-template" name="template">
+              {TEMPLATE_OPTIONS.map((template) => <option value={template.key}>{template.label} — {template.description}</option>)}
+            </select>
+          </Field>
           <p class="hint t2 small" style="margin-top:-6px">
-            A unique endpoint is generated automatically. You can rename the form later.
+            Templates create editable schema-v2 drafts. You can change every field in the builder before publishing.
           </p>
           <div class="flex mt16 gap8" style="justify-content:flex-end">
             <Button variant="ghost" data-close-modal="">Cancel</Button>

@@ -134,6 +134,7 @@ export const FormDetailPage: FC<{
 
       <div class="mb16">
         <EndpointBox url={endpoint} />
+        {form.slug ? <div class="card card-b mt8"><div class="small muted">Public share link</div><a class="mono small" href={`${origin}/s/${form.slug}`} target="_blank" rel="noreferrer">{origin}/s/{form.slug}</a><div class="small muted mt8">Embed</div><code class="mono small">{`<iframe src="${origin}/s/${form.slug}" style="width:100%;min-height:520px;border:0" loading="lazy"></iframe>`}</code></div> : null}
       </div>
 
       <div class="tabs">
@@ -330,6 +331,25 @@ export const FormDetailPage: FC<{
             <div class="mt8">
               <Button variant="primary" type="submit">Save changes</Button>
             </div>
+          </form>
+
+          <h2 class="section-title">Sharing</h2>
+          <form method="post" action={`/admin/forms/${form.id}/share`}>
+            <Field label="Human-readable slug" forId="share-slug" hint="Public URL: /s/your-slug. Letters, numbers, and hyphens only."><input class="input" id="share-slug" name="slug" value={form.slug ?? ""} placeholder="contact" /></Field>
+            <div class="flex gap8"><Field label="Open at" forId="share-open"><input class="input" id="share-open" type="datetime-local" name="open_at" value={form.open_at ? new Date(form.open_at).toISOString().slice(0,16) : ""} /></Field><Field label="Close at" forId="share-close"><input class="input" id="share-close" type="datetime-local" name="close_at" value={form.close_at ? new Date(form.close_at).toISOString().slice(0,16) : ""} /></Field></div>
+            <Field label="Submission limit" forId="share-limit"><input class="input" id="share-limit" type="number" min="1" name="submission_limit" value={form.submission_limit ?? ""} placeholder="Unlimited" /></Field>
+            <Field label="Closed message" forId="share-closed"><input class="input" id="share-closed" name="closed_message" value={form.closed_message ?? ""} placeholder="This form is closed." /></Field>
+            <label class="checkbox-row field"><input type="checkbox" name="one_per_respondent" checked={form.one_per_respondent === 1} /><span>Allow one submission per browser</span></label>
+            <Button variant="primary" type="submit">Save sharing settings</Button>
+          </form>
+
+          <h2 class="section-title">Theme</h2>
+          <form method="post" action={`/admin/forms/${form.id}/theme`}>
+            <div class="flex gap8"><Field label="Background" forId="theme-bg"><input class="input" id="theme-bg" name="background" value={(() => { try { const v = JSON.parse(form.theme_json ?? "{}"); return typeof v.background === "string" ? v.background : ""; } catch { return ""; } })()} placeholder="#f7f7f5" /></Field><Field label="Button" forId="theme-button"><input class="input" id="theme-button" name="button" value={(() => { try { const v = JSON.parse(form.theme_json ?? "{}"); return typeof v.button === "string" ? v.button : ""; } catch { return ""; } })()} placeholder="#2383e2" /></Field></div>
+            <div class="flex gap8"><Field label="Text" forId="theme-text"><input class="input" id="theme-text" name="text" value={(() => { try { const v = JSON.parse(form.theme_json ?? "{}"); return typeof v.text === "string" ? v.text : ""; } catch { return ""; } })()} placeholder="#37352f" /></Field><Field label="Radius (px)" forId="theme-radius"><input class="input" id="theme-radius" type="number" min="0" max="32" name="radius" value={(() => { try { const v = JSON.parse(form.theme_json ?? "{}"); return typeof v.radius === "number" ? String(v.radius) : "10"; } catch { return "10"; } })()} /></Field></div>
+            <Field label="Logo URL" forId="theme-logo"><input class="input" id="theme-logo" type="url" name="logo" value={(() => { try { const v = JSON.parse(form.theme_json ?? "{}"); return typeof v.logo === "string" ? v.logo : ""; } catch { return ""; } })()} placeholder="https://..." /></Field>
+            <Field label="Cover image URL" forId="theme-cover"><input class="input" id="theme-cover" type="url" name="cover" value={(() => { try { const v = JSON.parse(form.theme_json ?? "{}"); return typeof v.cover === "string" ? v.cover : ""; } catch { return ""; } })()} placeholder="https://..." /></Field>
+            <Button variant="primary" type="submit">Save theme</Button>
           </form>
 
           <h2 class="section-title" style="color:var(--danger)">Danger zone</h2>
