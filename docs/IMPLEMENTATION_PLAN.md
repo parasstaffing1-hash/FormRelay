@@ -22,20 +22,18 @@ Phases follow the governing `SPEC_PLATFORM.md`. Priority: P0 first (reliability)
 - **REST API `/api/v1`**: forms + responses (Bearer-key auth, per-key rate limit, pagination).
 - **Audit log**: form.created/published/archived/deleted, key.created/revoked, response.deleted, settings.updated, retention.pruned.
 
-## Phase 4 — Templates & sharing (PLANNED)
-- Seed 6 real preset schemas (Contact, Feedback, Job app, RSVP, NPS, Project request) in the New-form modal.
-- Public URL slugs, share/embed affordances.
+## Phase 4 — Templates & sharing (SHIPPED)
+- Added eight editable schema-v2 presets (Contact, Feedback, Job app, RSVP, NPS, Project request, Registration, Consent) in the New-form modal.
+- Added validated public slugs, iframe embed snippet, open/close windows, submission limits, one-per-browser protection, closed message, and theme JSON controls.
 
-## Phase 5 — Smart forms (PLANNED, P1)
-- Conditional logic engine (rules, AND/OR groups, actions: show/hide/require/jump).
-- Variables + sandboxed calculations + answer piping.
-- Multi-page + page-break blocks; multiple/conditional endings.
-- Partial responses + save/resume tokens + prefill.
+## Phase 5 — Smart forms (SHIPPED / PARTIAL)
+- Added pure schema-v2 conditional evaluator, visual rule editor, show/hide/require/jump/redirect/set-variable actions, publish-time reference validation, safe AST calculations, typed variables, answer piping, page navigation, prefill, autosave, and expiring resume tokens.
+- Remaining: multi-condition editing, full conditional endings, repeatable sections, richer client-side calculation updates, and conversational rendering.
 
-## Phase 6 — Workflow & integrations (PLANNED, P1)
-- Visual workflow engine (triggers/conditions/actions, run history, retry/replay).
-- Integrations: Google Sheets / Airtable / Slack / Discord / HubSpot (provider adapters, field mapping, update-record support).
-- Embedded forms (iframe + JS API + popup), QR, close dates.
+## Phase 6 — Workflow & integrations (SHIPPED / PARTIAL)
+- Added persisted workflow definitions, trigger conditions, asynchronous execution, run/step history, bounded retries, notification/email/webhook/tag/wait actions, and a management UI.
+- Generic outbound webhook actions are available as the first provider adapter; provider-specific Sheets/Airtable/Slack/Discord/HubSpot adapters and update-record mappings remain.
+- Responsive iframe embed and ready postMessage event are available; callback SDK, popup, and QR UI remain.
 
 ## Phase 7 — Enterprise & differentiation (PLANNED, P2)
 - Multi-tenant workspaces + roles/invitations.

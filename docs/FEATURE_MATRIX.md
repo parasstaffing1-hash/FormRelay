@@ -34,36 +34,36 @@ Legend — **DONE** = UI works + backend works + data persists + errors handled 
 | **API keys** (create/list/revoke, SHA-256 hash, prefix+last4) | DONE | 4 | — | — | P1 | schema | smoke ✅ |
 | **REST API `/api/v1`** (forms/responses) | DONE | 4 | — | — | P1 | keys | smoke ✅ |
 | Audit log (form/key/response actions) | PARTIAL | 3 | — | cover webhook/integration actions | P2 | schema | partial |
-| Templates (preset schemas) | PARTIAL | 2 | Tally | seed real presets in UI | P1 | schema | none |
+| Templates (preset schemas) | DONE | 4 | Tally | — | P1 | schema | smoke ✅ |
 | Webhook HMAC secret rotation / reveal | PARTIAL | 3 | Formspree | — | P2 | — | manual |
 | Workspace multi-tenant (members/roles) | NOT IMPLEMENTED | — | Typeform | full RBAC | P1 | users table | — |
 | Invitations | NOT IMPLEMENTED | — | Typeform | invite flow | P1 | memberships | — |
-| Conditional logic engine | NOT IMPLEMENTED | — | Typeform | rules engine | P1 | schema v2 | — |
+| Conditional logic engine | PARTIAL | 3 | Typeform | multi-condition UI, richer validation | P1 | schema v2 | smoke ✅ |
 | Logic simulator / map view | NOT IMPLEMENTED | — | Typeform | — | P2 | logic | — |
-| Calculations & variables | NOT IMPLEMENTED | — | Fillout | formula parser (sandboxed) | P1 | schema v2 | — |
-| Answer piping (`{{value}}`) | NOT IMPLEMENTED | — | Typeform | pipe resolver | P1 | schema v2 | — |
-| Multi-page / page-break forms | NOT IMPLEMENTED | — | Typeform | page blocks | P1 | schema v2 | — |
+| Calculations & variables | PARTIAL | 3 | Fillout | client recalculation and richer types | P1 | schema v2 | typecheck ✅ |
+| Answer piping (`{{value}}`) | DONE | 3 | Typeform | — | P1 | schema v2 | smoke ✅ |
+| Multi-page / page-break forms | DONE | 3 | Typeform | — | P1 | schema v2 | smoke ✅ |
 | Conversational (one-question-at-a-time) | NOT IMPLEMENTED | — | Typeform | — | P1 | schema v2 | — |
-| Partial responses / autosave | NOT IMPLEMENTED | — | Typeform | resume tokens | P1 | sessions | — |
-| Save & resume (continue later) | NOT IMPLEMENTED | — | Typeform | resume tokens + expiry | P1 | sessions | — |
-| Prefill via URL params | NOT IMPLEMENTED | — | Typeform | prefill resolver | P1 | schema v2 | — |
+| Partial responses / autosave | PARTIAL | 3 | Typeform | server-side validation during autosave | P1 | sessions | smoke ✅ |
+| Save & resume (continue later) | DONE | 3 | Typeform | — | P1 | sessions | smoke ✅ |
+| Prefill via URL params | DONE | 3 | Typeform | — | P1 | schema v2 | smoke ✅ |
 | Multiple endings / conditional endings | NOT IMPLEMENTED | — | Typeform | — | P1 | schema v2 | — |
 | Repeating sections / subforms | NOT IMPLEMENTED | — | Jotform | — | P2 | schema v2 | — |
 | Skip logic / disqualification | NOT IMPLEMENTED | — | Typeform | — | P1 | logic | — |
-| Custom themes / branding | NOT IMPLEMENTED | — | Tally | theme engine | P1 | schema | — |
+| Custom themes / branding | DONE | 3 | Tally | font selector and hosted asset picker | P1 | schema | smoke ✅ |
 | Multilingual forms (no clone) | NOT IMPLEMENTED | — | Typeform | translation layer over IDs | P2 | schema v2 | — |
 | Randomization / question pools | NOT IMPLEMENTED | — | SurveyMonkey | — | P2 | schema v2 | — |
 | Quizzes & scoring | NOT IMPLEMENTED | — | Typeform | points + outcomes | P2 | calc | — |
 | Payments (Stripe-style provider) | NOT IMPLEMENTED | — | Jotform | provider abstraction | P1 | — | — |
 | E-signatures | NOT IMPLEMENTED | — | Cognito | — | P2 | — | — |
 | Appointments / booking fields | NOT IMPLEMENTED | — | Jotform | availability + calendars | P2 | — | — |
-| Workflows automation engine | NOT IMPLEMENTED | — | Jotform | triggers/actions + runs | P1 | schema v2 | — |
+| Workflows automation engine | PARTIAL | 3 | Jotform | multi-step editor, manual retry/replay UI | P1 | schema v2 | smoke ✅ |
 | Approvals | NOT IMPLEMENTED | — | Formstack | — | P2 | workflow | — |
 | Integrations (Sheets/Airtable/Slack/Terminal) | NOT IMPLEMENTED | — | Jotform | providers + field mapping | P1 | — | — |
-| Embedding (iframe/JS API/popup) | NOT IMPLEMENTED | — | Typeform | embed SDK | P1 | — | — |
+| Embedding (iframe/JS API/popup) | PARTIAL | 3 | Typeform | documented JS callbacks and popup helper | P1 | schema v2 | smoke ✅ |
 | Custom domains | NOT IMPLEMENTED | — | Typeform | hostname→form map | P2 | — | — |
-| Form sharing/public URL + slug | NOT IMPLEMENTED | — | Tally | slug field | P1 | schema | — |
-| QR codes, closed dates, submission limits | NOT IMPLEMENTED | — | Typeform | — | P2 | schema | — |
+| Form sharing/public URL + slug | DONE | 4 | Tally | — | P1 | schema | smoke ✅ |
+| QR codes, closed dates, submission limits | PARTIAL | 3 | Typeform | QR rendering | P2 | schema | smoke ✅ |
 | PDF / document generation | NOT IMPLEMENTED | — | Formstack | template engine | P2 | — | — |
 | XLSX / JSON export | PARTIAL | 3 | Jotform | JSON via API only | P2 | — | — |
 | Global search (forms/subs) | PARTIAL | 2 | Jotform | form name search only | P1 | — | partial |

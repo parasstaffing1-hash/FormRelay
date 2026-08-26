@@ -59,6 +59,7 @@ import { spillIfLarge, resolveSpilledData } from "./spill";
 import { parseSchema, emptySchema, validateBlockValue, isSchemaV2 } from "./blocks";
 import { evaluateRules, pipeText, validateSchemaV2, resolveVariables } from "./logic";
 import { executeWorkflow } from "./workflow-engine";
+import { checkFormHealth } from "./health";
 import { PublicFormPage } from "./pages/public-form";
 import { BuilderPage } from "./pages/builder";
 import { audit } from "./audit";
@@ -669,6 +670,14 @@ app.get("/admin/forms/:id/build", async (c) => {
       editId={editId}
     />
   );
+});
+
+app.get("/admin/forms/:id/health", async (c) => {
+  const form = await getForm(c.env.DB, c.req.param("id"));
+  if (!form) return c.notFound();
+  const items = checkFormHealth(form, !!c.env.RESEND_API_KEY);
+  const tone = items.some((item) => item.level === "error") ? "error" : items.some((item) => item.level === "warning") ? "warning" : "ok";
+  return c.html(<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Health · {form.name}</title><style dangerouslySetInnerHTML={{ __html: CSS }} /></head><body style="font-family:system-ui;max-width:720px;margin:40px auto;padding:0 20px"><p><a href={`/admin/forms/${form.id}/build`}>← Back to builder</a></p><h1>Form health</h1><p>{form.name} · <strong>{tone}</strong></p><ul>{items.map((item) => <li style={`margin:8px 0;color:${item.level === "error" ? "#b42318" : item.level === "warning" ? "#9a6700" : "#18794e"}`}>{item.level.toUpperCase()}: {item.message}</li>)}</ul></body></html>);
 });
 
 app.post("/admin/forms/:id/schema", async (c) => {
