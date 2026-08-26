@@ -1,0 +1,5 @@
+ADMIN_PASSWORD=changeme
+SESSION_SECRET=paste-a-long-random-string-here
+RESEND_API_KEY=
+MAIL_FROM=OpenForms <onboarding@resend.dev>
+TURNSTILE_SECRET_KEY=

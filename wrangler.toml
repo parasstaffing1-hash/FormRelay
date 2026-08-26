@@ -1,0 +1,8 @@
+name = "formrelay"
+main = "src/index.tsx"
+compatibility_date = "2025-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "formrelay"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
