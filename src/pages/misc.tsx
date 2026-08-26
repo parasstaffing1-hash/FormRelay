@@ -485,6 +485,13 @@ export const LandingPage: FC<{ origin: string }> = ({ origin }) => (
           <a class="btn-primary" href="/admin">Create a form</a>
           <a class="btn-secondary" href="#quickstart">See it work</a>
         </div>
+        <div class="trust-strip"><span>Self-hosted</span><span>Open source</span><span>Cloudflare-native</span><span>No vendor lock-in</span></div>
+
+        <section class="capability-grid" aria-label="Platform capabilities">
+          <article class="capability capability-wide"><span class="eyebrow">01 · Capture</span><h2>Build forms people actually finish.</h2><p>Multi-page, conversational, conditional, branded, and resumable — without making respondents fight your UI.</p><div class="pill-row"><span>Smart logic</span><span>Save &amp; resume</span><span>Custom themes</span></div></article>
+          <article class="capability"><span class="eyebrow">02 · Protect</span><h3>Trust built in.</h3><p>Honeypots, rate limits, Turnstile, signed webhooks, scoped sessions, and server-side validation.</p></article>
+          <article class="capability"><span class="eyebrow">03 · Route</span><h3>Data where work happens.</h3><p>Notifications, retries, workflow steps, provider adapters, JSON export, and an inbox for your team.</p></article>
+        </section>
 
         <section id="quickstart" class="land-code">
           <pre>{`<form action="${origin}/f/XXXXXX" method="POST">
@@ -500,18 +507,9 @@ export const LandingPage: FC<{ origin: string }> = ({ origin }) => (
         </section>
 
         <section class="feats">
-          <div class="feat">
-            <h3>Endpoints, not plumbing</h3>
-            <p>Create a form, copy one URL, paste it into any HTML — no server code anywhere.</p>
-          </div>
-          <div class="feat">
-            <h3>Spam stays out</h3>
-            <p>Honeypot traps, per-IP rate limiting, and optional Cloudflare Turnstile — built in.</p>
-          </div>
-          <div class="feat">
-            <h3>Data goes anywhere</h3>
-            <p>Email notifications, signed webhooks, JSON API, CSV export. Runs entirely on Cloudflare's free tier.</p>
-          </div>
+          <div class="feat"><span class="feat-no">A</span><h3>Endpoints, not plumbing</h3><p>Create a form, copy one URL, paste it into any HTML — no server code anywhere.</p></div>
+          <div class="feat"><span class="feat-no">B</span><h3>Spam stays out</h3><p>Honeypot traps, per-IP rate limiting, and optional Cloudflare Turnstile — built in.</p></div>
+          <div class="feat"><span class="feat-no">C</span><h3>Data goes anywhere</h3><p>Email notifications, signed webhooks, JSON API, CSV export. Runs entirely on Cloudflare's free tier.</p></div>
         </section>
       </main>
 
@@ -528,14 +526,15 @@ body{margin:0;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sa
 .land{max-width:800px;margin:0 auto;padding:130px 24px 40px;text-align:center}
 .land h1{font-size:46px;font-weight:700;letter-spacing:-.03em;line-height:1.08;margin:0}
 .tagline{font-size:16.5px;color:#787774;max-width:560px;margin:18px auto 30px}
-.land-actions{display:flex;gap:10px;justify-content:center;margin-bottom:44px}
+.land-actions{display:flex;gap:10px;justify-content:center;margin-bottom:24px}
+.trust-strip{display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin:0 auto 52px;color:#9b9a97;font-size:11px;text-transform:uppercase;letter-spacing:.08em}.trust-strip span{border:1px solid #e9e9e7;border-radius:999px;padding:5px 10px;background:#fff}
+.capability-grid{display:grid;grid-template-columns:1.35fr 1fr 1fr;gap:12px;text-align:left;margin:0 0 24px}.capability{border:1px solid #e9e9e7;border-radius:12px;padding:22px;background:#fff;min-height:168px;box-shadow:0 8px 24px rgba(55,53,47,.04)}.capability-wide{background:#f7faff;border-color:#dbeafe}.eyebrow{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#2383e2;font-weight:650}.capability h2{font-size:22px;line-height:1.18;letter-spacing:-.02em;margin:14px 0 8px}.capability h3{font-size:15px;margin:14px 0 8px}.capability p{font-size:13px;color:#787774;margin:0}.pill-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:18px}.pill-row span{font-size:11px;color:#4b5563;background:#fff;border:1px solid #dbeafe;border-radius:999px;padding:4px 8px}
 .btn-primary{background:#2383e2;color:#fff;border:none;border-radius:6px;font:inherit;font-size:14px;font-weight:550;padding:9px 18px;cursor:pointer;text-decoration:none;display:inline-block}
 .btn-primary:hover{background:#1b74ca}
 .btn-secondary{background:#fff;border:1px solid #dededb;color:#37352f;border-radius:6px;font:inherit;font-size:14px;font-weight:500;padding:8px 16px;cursor:pointer;text-decoration:none;display:inline-block}
 .btn-secondary:hover{background:#f7f7f5}
 .land-code pre{text-align:left;background:#f7f7f5;border:1px solid #e9e9e7;border-radius:10px;padding:22px 26px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.8px;line-height:1.65;overflow-x:auto}
-.feats{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:28px;text-align:left;margin-top:56px}
-.feat h3{font-size:14.5px;margin:0 0 6px}
-.feat p{font-size:13.5px;color:#787774;margin:0}
+.feats{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:28px;text-align:left;margin-top:56px}.feat-no{display:inline-flex;width:22px;height:22px;border-radius:7px;background:#f1f1ef;color:#787774;align-items:center;justify-content:center;font-size:11px;font-weight:650;margin-bottom:12px}.feat h3{font-size:14.5px;margin:0 0 6px}.feat p{font-size:13.5px;color:#787774;margin:0}
+@media(max-width:700px){.lnav{padding:12px 16px}.land{padding:112px 18px 28px}.land h1{font-size:40px}.tagline{font-size:15px}.capability-grid{grid-template-columns:1fr}.capability-wide{min-height:0}.land-code pre{font-size:11px;padding:16px}.trust-strip{margin-bottom:34px}}
 .lfoot{text-align:center;color:#9b9a97;font-size:12.5px;padding:32px 16px 48px}
 `;
