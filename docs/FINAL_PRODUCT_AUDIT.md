@@ -89,7 +89,8 @@ The repository was pushed to `main` in the following feature commits:
 | `f151071` | Persisted workflow automation and management UI |
 | `fdda3d7` | Migration, documentation, and form health checks |
 | `e469f11` | In-app notification center |
-| `working tree` | RBAC, provider adapters, advanced endings, embeds, replay, and response management |
+| `b75172b` | Workspace members, provider adapters, advanced endings, embed SDK, replay, and response management |
+| `8136d4c` | Persist disqualification ending schema |
 
 ## Remaining work
 
