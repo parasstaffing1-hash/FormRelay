@@ -25,7 +25,7 @@ The implementation deliberately keeps the existing modular Worker architecture: 
 | Sharing | Human slug route, open/close dates, custom closed message, submission limit, one-per-browser cookie | Form columns | Share-route smoke |
 | Themes | Sanitized HTTP(S) logo/cover URLs, colors, radius, and renderer CSS variables; no arbitrary custom CSS | `theme_json` | Settings route and public renderer |
 | Workflows | Form-scoped or global workflow definitions, trigger conditions, notification/email/webhook/tag/wait/integration actions, retries, run/step history, pause/resume/delete/replay UI | `workflows`, `workflow_runs`, `workflow_steps` | Workflow creation and management smoke |
-| Notifications | New completed submission and failed workflow notifications, list view, mark-all-read action | `notifications` | Route and migration verified by typecheck; runtime smoke pending final local reset |
+| Notifications | New completed submission and failed workflow notifications, list view, mark-all-read action | `notifications` | Route and migration verified by typecheck; local runtime smoke previously passed |
 | Form health | Pre-publish checks for missing labels, schema references, invalid redirects, empty schemas, missing email provider configuration, and upload constraints | Derived from form/schema | `/admin/forms/:id/health` route |
 
 ## Migrations
@@ -91,6 +91,7 @@ The repository was pushed to `main` in the following feature commits:
 | `e469f11` | In-app notification center |
 | `b75172b` | Workspace members, provider adapters, advanced endings, embed SDK, replay, and response management |
 | `8136d4c` | Persist disqualification ending schema |
+| `1fe70de` | Version history, upload hardening, and bulk response operations |
 
 ## Remaining work
 
