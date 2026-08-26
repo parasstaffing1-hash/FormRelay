@@ -7,7 +7,7 @@ export function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
-export function randomId(len = 10): string {
+export function randomToken(len = 10): string {
   const alphabet = "abcdefghijkmnopqrstuvwxyz23456789";
   const bytes = crypto.getRandomValues(new Uint8Array(len));
   let out = "";
@@ -37,4 +37,34 @@ export async function hmacVerify(payload: string, sig: string, secret: string): 
 
 export function csvCell(v: string): string {
   return `"${v.replace(/"/g, '""')}"`;
+}
+
+export function fmtNumber(n: number): string {
+  return new Intl.NumberFormat("en-US").format(n);
+}
+
+export function relTime(ms: number | null | undefined): string {
+  if (!ms) return "never";
+  const diff = Date.now() - ms;
+  if (diff < 45_000) return "just now";
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours === 1) return "1 hour ago";
+  if (hours < 24) return `${hours} hours ago`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return "yesterday";
+  if (days < 30) return `${days} days ago`;
+  return new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+export function fmtDateTime(ms: number): string {
+  const d = new Date(ms);
+  const date = d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  const time = d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+  return `${date}, ${time}`;
+}
+
+export function submissionRef(id: number): string {
+  return `FRA-${String(id).padStart(5, "0")}`;
 }
