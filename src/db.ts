@@ -1,7 +1,7 @@
 import {
   FormRow, FormWithStats, SubmissionRow, SubmissionWithContext,
   WebhookRow, WebhookWithContext, DeliveryRow, DashboardStats,
-  ApiKeyRow,
+  ApiKeyRow, WorkflowRow, WorkflowRunRow, WorkflowStepRow,
 } from "./types";
 
 const ALPHABET = "abcdefghijkmnopqrstuvwxyz23456789";
@@ -497,4 +497,63 @@ export async function touchApiKey(db: D1Database, id: string): Promise<void> {
 
 export async function revokeApiKey(db: D1Database, id: string): Promise<void> {
   await db.prepare("DELETE FROM api_keys WHERE id = ?").bind(id).run();
+}
+
+/* ================= workflows ================= */
+
+export async function createWorkflow(db: D1Database, fields: { formId: string | null; name: string; trigger: string; conditionJson: string; actionsJson: string }): Promise<WorkflowRow> {
+  const now = Date.now();
+  const row: WorkflowRow = { id: `wf_${randomId(10)}`, form_id: fields.formId, name: fields.name, trigger: fields.trigger, condition_json: fields.conditionJson, actions_json: fields.actionsJson, active: 1, created_at: now, updated_at: now };
+  await db.prepare("INSERT INTO workflows (id, form_id, name, trigger, condition_json, actions_json, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)")
+    .bind(row.id, row.form_id, row.name, row.trigger, row.condition_json, row.actions_json, now, now).run();
+  return row;
+}
+
+export async function listWorkflows(db: D1Database, formId?: string): Promise<WorkflowRow[]> {
+  const query = formId ? db.prepare("SELECT * FROM workflows WHERE form_id = ? ORDER BY created_at DESC").bind(formId) : db.prepare("SELECT * FROM workflows ORDER BY created_at DESC");
+  const { results } = await query.all<WorkflowRow>();
+  return results ?? [];
+}
+
+export async function getWorkflow(db: D1Database, id: string): Promise<WorkflowRow | null> {
+  return await db.prepare("SELECT * FROM workflows WHERE id = ?").bind(id).first<WorkflowRow>();
+}
+
+export async function setWorkflowActive(db: D1Database, id: string, active: boolean): Promise<void> {
+  await db.prepare("UPDATE workflows SET active = ?, updated_at = ? WHERE id = ?").bind(active ? 1 : 0, Date.now(), id).run();
+}
+
+export async function deleteWorkflow(db: D1Database, id: string): Promise<void> {
+  await db.prepare("DELETE FROM workflows WHERE id = ?").bind(id).run();
+}
+
+export async function createWorkflowRun(db: D1Database, workflowId: string, submissionId: number | null): Promise<WorkflowRunRow> {
+  const row: WorkflowRunRow = { id: `run_${randomId(12)}`, workflow_id: workflowId, submission_id: submissionId, status: "running", started_at: Date.now(), finished_at: null, error: "" };
+  await db.prepare("INSERT INTO workflow_runs (id, workflow_id, submission_id, status, started_at, finished_at, error) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .bind(row.id, row.workflow_id, row.submission_id, row.status, row.started_at, null, "").run();
+  return row;
+}
+
+export async function finishWorkflowRun(db: D1Database, id: string, status: "succeeded" | "failed", error = ""): Promise<void> {
+  await db.prepare("UPDATE workflow_runs SET status = ?, finished_at = ?, error = ? WHERE id = ?").bind(status, Date.now(), error.slice(0, 500), id).run();
+}
+
+export async function createWorkflowStep(db: D1Database, runId: string, index: number, actionType: string): Promise<number | null> {
+  const result = await db.prepare("INSERT INTO workflow_steps (run_id, step_index, action_type, status, detail, started_at) VALUES (?, ?, ?, 'running', '', ?)")
+    .bind(runId, index, actionType, Date.now()).run();
+  return result.meta?.last_row_id ?? null;
+}
+
+export async function finishWorkflowStep(db: D1Database, id: number, status: "succeeded" | "failed", detail: string): Promise<void> {
+  await db.prepare("UPDATE workflow_steps SET status = ?, detail = ?, finished_at = ? WHERE id = ?").bind(status, detail.slice(0, 500), Date.now(), id).run();
+}
+
+export async function listWorkflowRuns(db: D1Database, workflowId: string): Promise<WorkflowRunRow[]> {
+  const { results } = await db.prepare("SELECT * FROM workflow_runs WHERE workflow_id = ? ORDER BY started_at DESC LIMIT 100").bind(workflowId).all<WorkflowRunRow>();
+  return results ?? [];
+}
+
+export async function listWorkflowSteps(db: D1Database, runId: string): Promise<WorkflowStepRow[]> {
+  const { results } = await db.prepare("SELECT * FROM workflow_steps WHERE run_id = ? ORDER BY step_index").bind(runId).all<WorkflowStepRow>();
+  return results ?? [];
 }

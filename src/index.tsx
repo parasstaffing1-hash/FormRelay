@@ -47,11 +47,18 @@ import {
   getFormBySlug,
   updateFormShare,
   updateFormTheme,
+  listWorkflows,
+  createWorkflow,
+  getWorkflow,
+  setWorkflowActive,
+  deleteWorkflow,
+  listWorkflowRuns,
 } from "./db";
 import apiApp from "./api";
 import { spillIfLarge, resolveSpilledData } from "./spill";
 import { parseSchema, emptySchema, validateBlockValue, isSchemaV2 } from "./blocks";
 import { evaluateRules, pipeText, validateSchemaV2, resolveVariables } from "./logic";
+import { executeWorkflow } from "./workflow-engine";
 import { PublicFormPage } from "./pages/public-form";
 import { BuilderPage } from "./pages/builder";
 import { audit } from "./audit";
@@ -212,6 +219,10 @@ app.post("/f/:id/save", async (c) => {
   if (existing && existing.form_id !== formId) return c.json({ ok: false, error: "Invalid resume token." }, 403);
   if (existing) await updatePartialSubmission(c.env.DB, existing.id, data);
   else await insertPartialSubmission(c.env.DB, formId, data, ip, userAgent, referer, hash, Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const partialId = existing?.id ?? null;
+  const partialWorkflows = (await listWorkflows(c.env.DB, formId)).filter((workflow) => workflow.active && workflow.trigger === "submission.partial");
+  const stringData: Record<string, string> = Object.fromEntries(Object.entries(data).map(([key, value]) => [key, Array.isArray(value) ? value.map(String).join(", ") : String(value ?? "")]));
+  c.executionCtx.waitUntil(Promise.allSettled(partialWorkflows.map((workflow) => executeWorkflow(c.env, workflow, form, partialId, stringData))));
   return c.json({ ok: true, token });
 });
 
@@ -415,16 +426,17 @@ app.post("/f/:id", async (c) => {
     if (!verdict.spam) {
       const hooks = await listWebhooks(c.env.DB, formId);
       const activeHooks = hooks.filter((h) => h.active);
+      const workflows = await listWorkflows(c.env.DB, formId);
+      const activeWorkflows = workflows.filter((workflow) => workflow.active && workflow.trigger === "submission.completed");
       const createdAt = Date.now();
       c.executionCtx.waitUntil(
         Promise.allSettled([
           sendNotification(c.env, form, data),
           sendAutoReply(c.env, form, data),
           ...(submissionId !== null
-            ? activeHooks.map((h) =>
-                deliverSubmission(c.env.DB, h, { id: form.id, name: form.name }, submissionId, data, createdAt)
-              )
+            ? activeHooks.map((h) => deliverSubmission(c.env.DB, h, { id: form.id, name: form.name }, submissionId, data, createdAt))
             : []),
+          ...activeWorkflows.map((workflow) => executeWorkflow(c.env, workflow, form, submissionId, data)),
         ])
       );
     }
@@ -1015,16 +1027,39 @@ app.post("/admin/webhooks/:id/test", async (c) => {
 /* ---------- workflows / files ---------- */
 
 app.get("/admin/workflows", async (c) => {
-  const stats = await getDashboardStats(c.env.DB);
-  return c.html(
-    <WorkflowsPage
-      path="/admin/workflows"
-      toastMsg={msgFrom(c)}
-      commands={baseCommands(originOf(c.req.url))}
-      formCount={stats.form_count}
-      submissionCount={stats.submission_count}
-    />
-  );
+  const [stats, workflows, forms] = await Promise.all([getDashboardStats(c.env.DB), listWorkflows(c.env.DB), listForms(c.env.DB)]);
+  const runPairs = await Promise.all(workflows.map(async (workflow) => [workflow.id, await listWorkflowRuns(c.env.DB, workflow.id)] as const));
+  return c.html(<WorkflowsPage path="/admin/workflows" workflows={workflows} forms={forms} runs={Object.fromEntries(runPairs)} toastMsg={msgFrom(c)} commands={baseCommands(originOf(c.req.url))} formCount={stats.form_count} submissionCount={stats.submission_count} />);
+});
+
+app.post("/admin/workflows", async (c) => {
+  const body = await c.req.parseBody();
+  const name = String(body.name ?? "").trim();
+  if (!name) return c.redirect("/admin/workflows?msg=Workflow+name+required");
+  const formId = String(body.form_id ?? "").trim() || null;
+  if (formId && !await getForm(c.env.DB, formId)) return c.redirect("/admin/workflows?msg=Unknown+form");
+  const conditionField = String(body.condition_field ?? "").trim();
+  const conditionJson = conditionField ? JSON.stringify([{ field: conditionField, operator: String(body.condition_operator ?? "equals"), value: String(body.condition_value ?? "") }]) : "[]";
+  const actionType = String(body.action_type ?? "notify");
+  const action = actionType === "webhook" ? { type: "webhook", url: String(body.action_url ?? "").trim() } : actionType === "email" || actionType === "notify" ? { type: actionType, value: String(body.action_url ?? "").trim() } : actionType === "add_tag" ? { type: "add_tag", value: String(body.action_value ?? "").trim() } : { type: "wait", delayMs: Math.max(0, Math.min(10000, Number(body.action_value ?? 0))) };
+  await createWorkflow(c.env.DB, { formId, name, trigger: String(body.trigger ?? "submission.completed"), conditionJson, actionsJson: JSON.stringify([action]) });
+  await audit(c.env.DB, "workflow.created", formId ?? "", name);
+  return c.redirect("/admin/workflows?msg=Workflow+created");
+});
+
+app.post("/admin/workflows/:id/toggle", async (c) => {
+  const workflow = await getWorkflow(c.env.DB, c.req.param("id"));
+  if (!workflow) return c.notFound();
+  await setWorkflowActive(c.env.DB, workflow.id, !workflow.active);
+  return c.redirect("/admin/workflows?msg=Workflow+updated");
+});
+
+app.post("/admin/workflows/:id/delete", async (c) => {
+  const id = c.req.param("id");
+  if (!await getWorkflow(c.env.DB, id)) return c.notFound();
+  await deleteWorkflow(c.env.DB, id);
+  await audit(c.env.DB, "workflow.deleted", id, "deleted");
+  return c.redirect("/admin/workflows?msg=Workflow+deleted");
 });
 
 app.get("/admin/files", async (c) => {

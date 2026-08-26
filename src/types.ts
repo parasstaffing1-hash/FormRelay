@@ -106,3 +106,9 @@ export type FileWithContext = FileRow & { form_name: string | null };
 
 export type ApiKeyRow = { id:string; name:string; prefix:string; hash:string; last4:string; last_used_at:number|null; created_at:number };
 export type AuditRow = { id:number; action:string; target_id:string; detail:string; created_at:number };
+
+export type WorkflowAction = { type: "email" | "webhook" | "notify" | "add_tag" | "wait"; url?: string; value?: string; delayMs?: number };
+export type WorkflowCondition = { field: string; operator: "equals" | "not_equals" | "contains" | "gt" | "lt" | "is_not_empty"; value?: string };
+export type WorkflowRow = { id: string; form_id: string | null; name: string; trigger: "submission.completed" | "submission.partial" | "score.threshold" | "response.updated" | string; condition_json: string; actions_json: string; active: number; created_at: number; updated_at: number };
+export type WorkflowRunRow = { id: string; workflow_id: string; submission_id: number | null; status: "running" | "succeeded" | "failed" | string; started_at: number; finished_at: number | null; error: string };
+export type WorkflowStepRow = { id: number; run_id: string; step_index: number; action_type: string; status: string; detail: string; started_at: number; finished_at: number | null; retry_count: number };

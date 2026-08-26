@@ -4,35 +4,42 @@ import { PageHead, Button, EmptyState, UsageMeter, CopyButton } from "../ui/comp
 import {
   IconZap, IconFile, IconLogo, IconAlert,
 } from "../ui/icons";
-import { FormRow, FormWithStats, DashboardStats, FileWithContext, ApiKeyRow } from "../types";
+import { FormRow, FormWithStats, DashboardStats, FileWithContext, ApiKeyRow, WorkflowRow, WorkflowRunRow } from "../types";
 import { fmtBytes, fmtDateTime, fmtNumber } from "../util";
 import { FILES_PAGE_SIZE } from "../files";
 
-/* ================= workflows (coming soon) ================= */
+/* ================= workflows ================= */
 
 export const WorkflowsPage: FC<{
   path: string;
+  workflows: WorkflowRow[];
+  forms: FormRow[];
+  runs: Record<string, WorkflowRunRow[]>;
   toastMsg?: string;
   commands: CommandItem[];
   formCount: number;
   submissionCount: number;
-}> = ({ path, toastMsg, commands, formCount, submissionCount }) => (
+}> = ({ path, workflows, forms, runs, toastMsg, commands, formCount, submissionCount }) => (
   <AppShell path={path} crumbs={[{ label: "Workflows" }]} toastMsg={toastMsg} commands={commands} formCount={formCount} submissionCount={submissionCount}>
-    <PageHead title="Workflows" sub="Route and act on submissions automatically." />
-    <EmptyState
-      icon={<IconZap size={20} />}
-      title="Workflows are coming soon"
-      desc="Rule-based automation — when a submission arrives, run actions like notifications, webhooks, or tags. No fake runs are shown here."
-    />
-    <div style="max-width:560px;margin:8px auto 0">
-      <p class="small t2 mb16 muted" style="text-align:center">Planned structure:</p>
-      <div class="rule-step"><span class="rule-kw">When</span><span class="rule-chip">New submission</span></div>
-      <div class="rule-step"><span class="rule-kw">From</span><span class="rule-chip">Contact form</span></div>
-      <div class="rule-step"><span class="rule-kw">Then</span>
-        <span class="rule-chip">Send notification</span>
-        <span class="rule-chip">Send webhook</span>
+    <PageHead title="Workflows" sub="Run real actions after submissions are persisted." />
+    <div class="card mb16" style="max-width:820px">
+      <div class="card-h">Create workflow</div>
+      <div class="card-b">
+        <form method="post" action="/admin/workflows" class="grid2">
+          <div class="field"><label for="wf-name">Name</label><input class="input" id="wf-name" name="name" placeholder="Notify sales" required /></div>
+          <div class="field"><label for="wf-form">Form</label><select class="select" id="wf-form" name="form_id"><option value="">All forms</option>{forms.map((form) => <option value={form.id}>{form.name}</option>)}</select></div>
+          <div class="field"><label for="wf-trigger">When</label><select class="select" id="wf-trigger" name="trigger"><option value="submission.completed">Submission completed</option><option value="submission.partial">Submission saved</option><option value="response.updated">Response updated</option></select></div>
+          <div class="field"><label for="wf-field">If field (optional)</label><input class="input" id="wf-field" name="condition_field" placeholder="e.g. topic" /></div>
+          <div class="field"><label for="wf-op">Condition</label><select class="select" id="wf-op" name="condition_operator"><option value="equals">equals</option><option value="not_equals">does not equal</option><option value="contains">contains</option><option value="gt">greater than</option><option value="lt">less than</option><option value="is_not_empty">is not empty</option></select></div>
+          <div class="field"><label for="wf-value">Condition value</label><input class="input" id="wf-value" name="condition_value" placeholder="Optional value" /></div>
+          <div class="field"><label for="wf-action">Then</label><select class="select" id="wf-action" name="action_type"><option value="notify">Send notification</option><option value="email">Send email</option><option value="webhook">Send webhook</option><option value="add_tag">Add tag</option><option value="wait">Wait</option></select></div>
+          <div class="field"><label for="wf-url">Action URL / recipient</label><input class="input" id="wf-url" name="action_url" placeholder="https://... or email" /></div>
+          <div class="field"><label for="wf-action-value">Action value</label><input class="input" id="wf-action-value" name="action_value" placeholder="Tag or delay in ms" /></div>
+          <div class="flex" style="align-items:flex-end"><Button variant="primary" type="submit">Create workflow</Button></div>
+        </form>
       </div>
     </div>
+    {workflows.length ? workflows.map((workflow) => <div class="card mb16" style="max-width:820px"><div class="card-h flex between"><span><strong>{workflow.name}</strong> <span class="badge badge-neutral">{workflow.trigger}</span></span><span class="flex gap8"><form method="post" action={`/admin/workflows/${workflow.id}/toggle`}><Button type="submit">{workflow.active ? "Pause" : "Resume"}</Button></form><form method="post" action={`/admin/workflows/${workflow.id}/delete`} onsubmit="return confirm('Delete this workflow and its run history?')"><Button variant="danger" type="submit">Delete</Button></form></span></div><div class="card-b"><p class="small t2">Scope: {workflow.form_id ? (forms.find((form) => form.id === workflow.form_id)?.name ?? workflow.form_id) : "All forms"} · Status: {workflow.active ? "active" : "paused"}</p><h3 class="small" style="margin:16px 0 8px">Recent runs</h3>{(runs[workflow.id] ?? []).length ? <table class="tbl"><thead><tr><th>Run</th><th>Status</th><th>Started</th><th>Error</th></tr></thead><tbody>{(runs[workflow.id] ?? []).map((run) => <tr><td class="mono small">{run.id}</td><td>{run.status}</td><td>{fmtDateTime(run.started_at)}</td><td class="small t2">{run.error || "—"}</td></tr>)}</tbody></table> : <p class="small t2">No runs yet. A run is created only when a matching submission arrives.</p>}</div></div>) : <EmptyState icon={<IconZap size={20} />} title="No workflows" desc="Create a rule above. Actions run after submission persistence and record success or failure." />}
   </AppShell>
 );
 
