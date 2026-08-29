@@ -175,7 +175,7 @@ export const AppShell: FC<
                 ))}
               </nav>
               <div class="topbar-right">
-                <button type="button" class="searchbtn" onclick={""} id="open-pal" aria-label="Search commands">
+                <button type="button" class="searchbtn" id="open-pal" aria-label="Search commands">
                   <IconSearch size={13} />
                   <span class="search-hint">Search...</span>
                   <kbd style="margin-left:auto">⌘K</kbd>
@@ -190,7 +190,7 @@ export const AppShell: FC<
         </div>
 
         <script type="application/json" id="pal-commands" dangerouslySetInnerHTML={{ __html: commandJson }} />
-        <script dangerouslySetInnerHTML={{ __html: PALETTE_WIRE + CLIENT_JS }} />
+        <script src="/assets/app.js" defer />
       </body>
     </html>
   );
@@ -204,14 +204,14 @@ function IconX2() {
   );
 }
 
-const PALETTE_WIRE = String.raw`
+export const PALETTE_WIRE = String.raw`
 document.addEventListener("DOMContentLoaded", function () {
   var btn = document.getElementById("open-pal");
   if (btn && window.frOpenPal) btn.addEventListener("click", function () { window.frOpenPal(); });
 });
 `;
 
-const THEME_BOOT = String.raw`
+export const THEME_BOOT = String.raw`
 (function () {
   try {
     var t = localStorage.getItem("fr.theme");

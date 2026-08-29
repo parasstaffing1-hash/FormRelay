@@ -212,12 +212,12 @@ export const BuilderPage: FC<Props> = ({ form, schema, origin: _origin, toastMsg
         </div>
       </div>
 
-      <script dangerouslySetInnerHTML={{ __html: BUILDER_JS }} />
+      <script src="/assets/builder.js" defer />
     </AppShell>
   );
 };
 
-const BUILDER_JS = String.raw`
+export const BUILDER_JS = String.raw`
 (function(){
   var ta = document.getElementById('schema_json');
   if(!ta) return;

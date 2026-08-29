@@ -55,7 +55,7 @@ export const SubmissionDetailPage: FC<{
             <input type="hidden" name="is_spam" value={sub.is_spam ? "0" : "1"} />
             <Button type="submit">{sub.is_spam ? "Mark not spam" : "Mark spam"}</Button>
           </form>
-          <form method="post" action={`/admin/submissions/${sub.id}/delete`} onsubmit="return confirm('Delete this submission?')">
+          <form method="post" action={`/admin/submissions/${sub.id}/delete`} data-confirm="Delete this submission?">
             <input type="hidden" name="back" value={backHref} />
             <Button variant="danger" type="submit">Delete</Button>
           </form>

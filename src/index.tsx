@@ -78,16 +78,16 @@ import { parseSchema, emptySchema, validateBlockValue, isSchemaV2 } from "./bloc
 import { evaluateRules, pipeText, validateSchemaV2, resolveVariables, selectEnding } from "./logic";
 import { executeWorkflow } from "./workflow-engine";
 import { checkFormHealth } from "./health";
-import { PublicFormPage } from "./pages/public-form";
-import { BuilderPage } from "./pages/builder";
+import { PublicFormPage, FORM_RUNTIME_JS } from "./pages/public-form";
+import { BuilderPage, BUILDER_JS } from "./pages/builder";
 import { audit } from "./audit";
 import { sendNotification, sendAutoReply } from "./email";
 import { checkSpam, normalizePayload } from "./spam";
 import { deliverSubmission, sendTestWebhook } from "./webhooks";
 import { getFiles, countFiles, totalStorage, getFile, saveUpload, deleteFile } from "./files";
-import { CLIENT_JS } from "./ui/client";
+import { CLIENT_JS_WITH_GUARDS, GUARDS_JS } from "./ui/client";
 import { CSS } from "./ui/styles";
-import { AppShell, CommandItem } from "./ui/shell";
+import { AppShell, CommandItem, THEME_BOOT, PALETTE_WIRE } from "./ui/shell";
 import { PageHead, Button } from "./ui/components";
 import { HomePage } from "./pages/home";
 import { FormsPage } from "./pages/forms";
@@ -116,12 +116,44 @@ const app = new Hono<Env>();
 // Mount API v1 subapp
 app.route("/api/v1", apiApp);
 
+/**
+ * The only inline script left is the pre-paint theme boot in the app shell. It is static,
+ * so it is pinned by hash and script-src can stay free of 'unsafe-inline'. All other JS is
+ * served from /assets/*.js. Computed once per isolate.
+ *
+ * style-src keeps 'unsafe-inline' because the UI uses inline style attributes throughout,
+ * which a nonce or hash cannot cover; theme-derived values are sanitized before render.
+ */
+let cspPromise: Promise<string> | null = null;
+
+async function contentSecurityPolicy(): Promise<string> {
+  if (!cspPromise) {
+    cspPromise = (async () => {
+      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(THEME_BOOT));
+      const hash = btoa(String.fromCharCode(...new Uint8Array(digest)));
+      return [
+        "default-src 'self'",
+        "style-src 'self' https://fonts.googleapis.com 'unsafe-inline'",
+        "font-src 'self' https://fonts.gstatic.com",
+        "img-src 'self' https: data:",
+        `script-src 'self' 'sha256-${hash}'`,
+        "connect-src 'self' https:",
+        "frame-src 'self' https:",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "object-src 'none'",
+      ].join("; ");
+    })();
+  }
+  return cspPromise;
+}
+
 app.use("*", async (c, next) => {
   await next();
   c.res.headers.set("X-Content-Type-Options", "nosniff");
   c.res.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
   c.res.headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
-  c.res.headers.set("Content-Security-Policy", "default-src 'self'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; img-src 'self' https: data:; script-src 'self' 'unsafe-inline'; connect-src 'self' https:; frame-src 'self' https:");
+  c.res.headers.set("Content-Security-Policy", await contentSecurityPolicy());
   if (new URL(c.req.url).pathname.startsWith("/admin")) c.res.headers.set("X-Frame-Options", "DENY");
 });
 
@@ -269,11 +301,13 @@ function baseCommands(origin: string): CommandItem[] {
 
 /* ---------- assets ---------- */
 
-app.get("/assets/app.js", (c) =>
-  new Response(CLIENT_JS, {
-    headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
-  })
-);
+const JS_HEADERS = { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" };
+
+// Served as files rather than inlined so the CSP can keep script-src at 'self'.
+app.get("/assets/app.js", () => new Response(CLIENT_JS_WITH_GUARDS + PALETTE_WIRE, { headers: JS_HEADERS }));
+app.get("/assets/builder.js", () => new Response(BUILDER_JS, { headers: JS_HEADERS }));
+app.get("/assets/form-runtime.js", () => new Response(FORM_RUNTIME_JS, { headers: JS_HEADERS }));
+app.get("/assets/guards.js", () => new Response(GUARDS_JS, { headers: JS_HEADERS }));
 
 /* ---------- public submit endpoint (preserved) ---------- */
 
@@ -854,7 +888,7 @@ app.get("/admin/forms/:id/versions", async (c) => {
   const form = await getForm(c.env.DB, c.req.param("id"));
   if (!form) return c.notFound();
   const versions = await listFormVersions(c.env.DB, form.id, 50);
-  return c.html(<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Version history · {form.name}</title><style dangerouslySetInnerHTML={{ __html: CSS }} /></head><body style="font-family:system-ui;max-width:820px;margin:40px auto;padding:0 20px"><p><a href={`/admin/forms/${form.id}/build`}>← Back to builder</a></p><h1>Version history</h1><p class="muted">Saved schema snapshots for {form.name}. Restoring a version replaces the current draft and published copy.</p>{versions.length ? <div class="card card-b">{versions.map((version) => <div class="kv" style="align-items:center"><div><strong>Version {version.id}</strong><div class="muted small">{new Date(version.created_at).toISOString()} · {version.created_by}</div></div><form method="post" action={`/admin/forms/${form.id}/versions/${version.id}/restore`} onsubmit="return confirm('Restore this version?')"><button class="btn btn-secondary btn-sm" type="submit">Restore</button></form></div>)}</div> : <p>No snapshots yet. Saving the builder will create the first snapshot.</p>}</body></html>);
+  return c.html(<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Version history · {form.name}</title><style dangerouslySetInnerHTML={{ __html: CSS }} /></head><body style="font-family:system-ui;max-width:820px;margin:40px auto;padding:0 20px"><p><a href={`/admin/forms/${form.id}/build`}>← Back to builder</a></p><h1>Version history</h1><p class="muted">Saved schema snapshots for {form.name}. Restoring a version replaces the current draft and published copy.</p>{versions.length ? <div class="card card-b">{versions.map((version) => <div class="kv" style="align-items:center"><div><strong>Version {version.id}</strong><div class="muted small">{new Date(version.created_at).toISOString()} · {version.created_by}</div></div><form method="post" action={`/admin/forms/${form.id}/versions/${version.id}/restore`} data-confirm="Restore this version?"><button class="btn btn-secondary btn-sm" type="submit">Restore</button></form></div>)}</div> : <p>No snapshots yet. Saving the builder will create the first snapshot.</p>}<script src="/assets/guards.js" defer /></body></html>);
 });
 
 app.post("/admin/forms/:id/versions/:versionId/restore", async (c) => {

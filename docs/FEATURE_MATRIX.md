@@ -77,7 +77,7 @@ Legend — **DONE** = UI works + backend works + data persists + errors handled 
 | Offline collection (PWA) | NOT IMPLEMENTED | — | — | — | P2 | — | — |
 | Rate limit (API keys) | PARTIAL | 3 | — | cross-isolate (DO/KV) | P2 | Durable Object | — |
 | CSRF protections | DONE | 4 | — | nonce tokens only if a cross-origin POST flow is added | P0 | — | smoke ✅ |
-| XSS hardening | DONE | 4 | — | drop CSP `'unsafe-inline'` via nonces | P0 | — | smoke ✅ |
+| XSS hardening | DONE | 5 | — | `style-src` still needs `'unsafe-inline'` for inline style attributes | P0 | — | smoke ✅ |
 | Password hashing (salted PBKDF2) | DONE | 5 | — | — | P0 | — | unit ✅ |
 | Sign-in brute-force lockout | DONE | 4 | — | — | P0 | — | smoke ✅ |
 | Theme CSS-injection sanitization | DONE | 5 | — | — | P0 | — | smoke ✅ |

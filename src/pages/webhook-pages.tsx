@@ -129,7 +129,7 @@ export const WebhookDetailPage: FC<{
           <form method="post" action={`/admin/webhooks/${hook.id}/toggle`}>
             <Button type="submit">{hook.active ? "Pause" : "Resume"}</Button>
           </form>
-          <form method="post" action={`/admin/webhooks/${hook.id}/delete`} onsubmit="return confirm('Delete this webhook?')">
+          <form method="post" action={`/admin/webhooks/${hook.id}/delete`} data-confirm="Delete this webhook?">
             <Button variant="danger" type="submit">Delete</Button>
           </form>
         </div>

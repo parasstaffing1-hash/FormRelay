@@ -101,7 +101,7 @@ export const FormsPage: FC<{
                             <button type="submit" class="menu-it">{f.archived ? "Restore" : "Archive"}</button>
                           </form>
                           <hr class="menu-sep" />
-                          <form method="post" action={`/admin/forms/${f.id}/delete`} onsubmit="return confirm('Delete this form and all of its submissions?')">
+                          <form method="post" action={`/admin/forms/${f.id}/delete`} data-confirm="Delete this form and all of its submissions?">
                             <button type="submit" class="menu-it danger">Delete</button>
                           </form>
                         </RowMenu>

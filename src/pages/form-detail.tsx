@@ -124,7 +124,7 @@ export const FormDetailPage: FC<{
                 <button type="submit" class="menu-it">{form.archived ? "Restore form" : "Archive form"}</button>
               </form>
               <hr class="menu-sep" />
-              <form method="post" action={`/admin/forms/${form.id}/delete`} onsubmit="return confirm('Delete this form and all of its submissions?')">
+              <form method="post" action={`/admin/forms/${form.id}/delete`} data-confirm="Delete this form and all of its submissions?">
                 <button type="submit" class="menu-it danger">Delete form</button>
               </form>
             </RowMenu>
@@ -296,7 +296,7 @@ export const FormDetailPage: FC<{
                           <button type="submit" class="menu-it">{w.active ? "Pause" : "Resume"}</button>
                         </form>
                         <hr class="menu-sep" />
-                        <form method="post" action={`/admin/webhooks/${w.id}/delete`} onsubmit="return confirm('Delete this webhook?')">
+                        <form method="post" action={`/admin/webhooks/${w.id}/delete`} data-confirm="Delete this webhook?">
                           <button type="submit" class="menu-it danger">Delete</button>
                         </form>
                       </RowMenu>
@@ -368,7 +368,7 @@ export const FormDetailPage: FC<{
                 <div class="cell-main">Delete form</div>
                 <div class="cell-sub">Permanently removes the form, its settings, and every submission.</div>
               </div>
-              <form method="post" action={`/admin/forms/${form.id}/delete`} onsubmit="return confirm('Delete this form and all of its submissions? This cannot be undone.')">
+              <form method="post" action={`/admin/forms/${form.id}/delete`} data-confirm="Delete this form and all of its submissions? This cannot be undone.">
                 <Button variant="danger" type="submit">Delete</Button>
               </form>
             </div>

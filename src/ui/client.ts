@@ -5,6 +5,49 @@ declare global {
   }
 }
 
+/**
+ * Delegated replacements for what used to be inline `on*=` attributes. Keeping these
+ * out of the markup is what lets the CSP drop `'unsafe-inline'` from script-src.
+ *
+ * Markup contract:
+ *   <form data-confirm="Message">          confirm() before submitting
+ *   <select data-autosubmit>               submit the owning form on change
+ *   <input data-check-all="<selector>">    mirror this checkbox onto every match
+ *   <form data-require-checked="<sel>" data-require-message="...">
+ *                                          block submit unless one match is checked
+ */
+export const GUARDS_JS = String.raw`
+(function () {
+  "use strict";
+
+  document.addEventListener("submit", function (e) {
+    var form = e.target;
+    if (!form || form.nodeName !== "FORM") return;
+
+    var message = form.getAttribute("data-confirm");
+    if (message && !confirm(message)) { e.preventDefault(); return; }
+
+    var requireSel = form.getAttribute("data-require-checked");
+    if (requireSel && document.querySelectorAll(requireSel + ":checked").length === 0) {
+      e.preventDefault();
+      alert(form.getAttribute("data-require-message") || "Select at least one item.");
+    }
+  });
+
+  document.addEventListener("change", function (e) {
+    var el = e.target;
+    if (!el || !el.getAttribute) return;
+
+    if (el.hasAttribute("data-autosubmit") && el.form) { el.form.submit(); return; }
+
+    var checkAll = el.getAttribute("data-check-all");
+    if (checkAll) {
+      document.querySelectorAll(checkAll).forEach(function (box) { box.checked = el.checked; });
+    }
+  });
+})();
+`;
+
 export const CLIENT_JS = String.raw`
 (function () {
   "use strict";
@@ -204,3 +247,5 @@ export const CLIENT_JS = String.raw`
   window.frOpenPal = openPal;
 })();
 `;
+
+export const CLIENT_JS_WITH_GUARDS = CLIENT_JS + GUARDS_JS;
