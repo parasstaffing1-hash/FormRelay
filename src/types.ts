@@ -39,6 +39,8 @@ export type FormRow = {
   unique_field?: string;
   consent_text?: string;
   field_acl_json?: string;
+  recurrence?: string;
+  unlock_at?: number | null;
 };
 
 export type SubmissionStatus = "in_progress" | "partial" | "completed" | "abandoned" | "spam" | "deleted";
@@ -67,6 +69,7 @@ export type SubmissionRow = {
   quality_json?: string;
   consent_json?: string;
   respondent_key?: string | null;
+  cohort?: string;
 };
 
 export type WebhookRow = {

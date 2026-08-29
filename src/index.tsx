@@ -83,6 +83,14 @@ import {
   listResponseViews,
   listRecentResponseViews,
   updateFormTrust,
+  setSubmissionCohort,
+  updateFormOps,
+  listCohorts,
+  getDelivery,
+  submissionsForMigration,
+  setSubmissionData,
+  resealChain,
+  runReadOnlyQuery,
 } from "./db";
 import apiApp from "./api";
 import { spillIfLarge, resolveSpilledData } from "./spill";
@@ -94,6 +102,7 @@ import { verifyChain, verifyPrefill, buildPrefillUrl, PREFILL_SIG_PARAM } from "
 import { diffSchemas, summarizeDiff } from "./diff";
 import { verifyPow, issuePowChallenge, blindIdentity, buildConsentReceipt, scoreQuality, issueStartToken, elapsedFromStartToken, parseFieldAcl, redactForRole } from "./trust";
 import { POW_CLIENT_JS } from "./pow-client";
+import { guardSelect, cohortFor, isRecurrence, Recurrence, applyMigration, migrateSchemaBlocks, MigrationOp, isSealed, sealedNotice } from "./ops";
 import { PublicFormPage, FORM_RUNTIME_JS } from "./pages/public-form";
 import { BuilderPage, BUILDER_JS } from "./pages/builder";
 import { audit } from "./audit";
@@ -649,6 +658,8 @@ app.post("/f/:id", async (c) => {
     }
     if (submissionId !== null) {
       await annotateSubmission(c.env.DB, submissionId, JSON.stringify(quality), consent ? JSON.stringify(consent) : "", respondentKey);
+      const recurrence = (form.recurrence ?? "off") as Recurrence;
+      if (recurrence !== "off") await setSubmissionCohort(c.env.DB, submissionId, cohortFor(Date.now(), recurrence));
     }
     if (!verdict.spam && form.one_per_respondent === 1) setCookie(c, `fr_responded_${formId}`, "1", { httpOnly: true, sameSite: "Lax", path: `/f/${formId}`, maxAge: 31536000 });
     if (c.env.FILES && uploads.length > 0 && !verdict.spam) {
@@ -1662,6 +1673,11 @@ app.get("/admin/submissions/:id", async (c) => {
       if (labels !== undefined) visible["_labels"] = redactForRole(labels as Record<string, unknown>, acl, viewer.role);
       sub = { ...sub, data: JSON.stringify(visible) };
     } catch {}
+  }
+
+  // Time-locked forms withhold content from every read path until the unlock time.
+  if (parentForm && isSealed(parentForm.unlock_at)) {
+    sub = { ...sub, data: JSON.stringify({ _sealed: sealedNotice(parentForm.unlock_at as number) }) };
   }
 
   // Record who read this response. Regulated intake needs to answer that question.

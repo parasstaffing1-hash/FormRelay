@@ -779,3 +779,58 @@ export async function updateFormTrust(
   await db.prepare("UPDATE forms SET pow_bits = ?, unique_mode = ?, unique_field = ?, consent_text = ?, field_acl_json = ? WHERE id = ?")
     .bind(patch.pow_bits, patch.unique_mode, patch.unique_field, patch.consent_text, patch.field_acl_json, formId).run();
 }
+
+/* ---------- ops ---------- */
+
+export async function setSubmissionCohort(db: D1Database, id: number, cohort: string): Promise<void> {
+  if (!cohort) return;
+  await db.prepare("UPDATE submissions SET cohort = ? WHERE id = ?").bind(cohort, id).run();
+}
+
+export async function updateFormOps(db: D1Database, formId: string, recurrence: string, unlockAt: number | null): Promise<void> {
+  await db.prepare("UPDATE forms SET recurrence = ?, unlock_at = ? WHERE id = ?").bind(recurrence, unlockAt, formId).run();
+}
+
+export async function listCohorts(db: D1Database, formId: string): Promise<{ cohort: string; count: number }[]> {
+  const { results } = await db.prepare(
+    "SELECT cohort, COUNT(*) AS count FROM submissions WHERE form_id = ? AND cohort != '' GROUP BY cohort ORDER BY cohort DESC LIMIT 52"
+  ).bind(formId).all<{ cohort: string; count: number }>();
+  return results ?? [];
+}
+
+export async function getDelivery(db: D1Database, id: number): Promise<DeliveryRow | null> {
+  return await db.prepare("SELECT * FROM webhook_deliveries WHERE id = ?").bind(id).first<DeliveryRow>();
+}
+
+/** Rows for a schema migration: id plus raw stored payload. */
+export async function submissionsForMigration(db: D1Database, formId: string): Promise<{ id: number; data: string }[]> {
+  const { results } = await db.prepare("SELECT id, data FROM submissions WHERE form_id = ? ORDER BY id").bind(formId).all<{ id: number; data: string }>();
+  return results ?? [];
+}
+
+export async function setSubmissionData(db: D1Database, id: number, data: string): Promise<void> {
+  await db.prepare("UPDATE submissions SET data = ?, updated_at = ? WHERE id = ?").bind(data, Date.now(), id).run();
+}
+
+/**
+ * Re-seals every response into a fresh chain. Needed after a disclosed rewrite such as a
+ * field migration, which necessarily changes stored digests.
+ */
+export async function resealChain(db: D1Database): Promise<{ count: number; head: string }> {
+  const links = await chainLinks(db);
+  let prev = genesisHash();
+  let count = 0;
+  for (const link of links) {
+    if (link.erased_at) continue;
+    const rowHash = await computeRowHash({ id: link.id, form_id: link.form_id, data: link.data, created_at: link.created_at, prev_hash: prev });
+    await db.prepare("UPDATE submissions SET prev_hash = ?, row_hash = ? WHERE id = ?").bind(prev, rowHash, link.id).run();
+    prev = rowHash;
+    count += 1;
+  }
+  return { count, head: prev };
+}
+
+export async function runReadOnlyQuery(db: D1Database, sql: string): Promise<Record<string, unknown>[]> {
+  const { results } = await db.prepare(sql).all<Record<string, unknown>>();
+  return results ?? [];
+}

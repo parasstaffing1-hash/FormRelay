@@ -9,7 +9,7 @@
     "db:init": "wrangler d1 execute formrelay --local --file=./schema.sql",
     "db:init:remote": "wrangler d1 execute formrelay --remote --file=./schema.sql",
     "typecheck": "tsc --noEmit",
-    "test": "rm -rf .test-build && tsc --target ES2022 --module CommonJS --moduleResolution Node --jsx react-jsx --jsxImportSource hono/jsx --skipLibCheck --outDir .test-build src/blocks.ts src/logic.ts src/util.ts src/integrity.ts src/diff.ts src/trust.ts && node --test tests/logic.test.cjs tests/security.test.cjs tests/integrity.test.cjs tests/erasure.test.cjs tests/trust.test.cjs"
+    "test": "rm -rf .test-build && tsc --target ES2022 --module CommonJS --moduleResolution Node --jsx react-jsx --jsxImportSource hono/jsx --skipLibCheck --outDir .test-build src/blocks.ts src/logic.ts src/util.ts src/integrity.ts src/diff.ts src/trust.ts src/ops.ts && node --test tests/logic.test.cjs tests/security.test.cjs tests/integrity.test.cjs tests/erasure.test.cjs tests/trust.test.cjs tests/ops.test.cjs"
   },
   "dependencies": {
     "hono": "^4.6.14"

@@ -85,7 +85,9 @@ CREATE TABLE IF NOT EXISTS forms (
   unique_mode TEXT NOT NULL DEFAULT 'off',
   unique_field TEXT NOT NULL DEFAULT '',
   consent_text TEXT NOT NULL DEFAULT '',
-  field_acl_json TEXT NOT NULL DEFAULT '{}'
+  field_acl_json TEXT NOT NULL DEFAULT '{}',
+  recurrence TEXT NOT NULL DEFAULT 'off',
+  unlock_at INTEGER
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_forms_slug ON forms (slug) WHERE slug IS NOT NULL AND slug != '';
@@ -135,7 +137,8 @@ CREATE TABLE IF NOT EXISTS submissions (
   erased_at INTEGER,
   quality_json TEXT NOT NULL DEFAULT '{}',
   consent_json TEXT NOT NULL DEFAULT '',
-  respondent_key TEXT
+  respondent_key TEXT,
+  cohort TEXT NOT NULL DEFAULT ''
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_submissions_respondent
@@ -291,3 +294,5 @@ CREATE TABLE IF NOT EXISTS response_views (
 
 CREATE INDEX IF NOT EXISTS idx_response_views_submission ON response_views (submission_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_response_views_created ON response_views (created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_submissions_cohort ON submissions (form_id, cohort);
