@@ -403,7 +403,6 @@ export const LoginPage: FC<{ error?: string }> = ({ error }) => (
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1" />
       <title>Log in · FormRelay</title>
-      <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600&display=swap" />
       <style dangerouslySetInnerHTML={{ __html: AUTH_CSS }} />
     </head>
     <body>
@@ -445,7 +444,7 @@ export const LoginPage: FC<{ error?: string }> = ({ error }) => (
 );
 
 const AUTH_CSS = String.raw`
-body{margin:0;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f7f7f5;color:#37352f;-webkit-font-smoothing:antialiased}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f7f7f5;color:#37352f;-webkit-font-smoothing:antialiased}
 .auth-body{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:16px}
 .bigmark{display:inline-flex;align-items:center;gap:10px}
 .wordmark{font-weight:650;font-size:17px;letter-spacing:-.01em}
@@ -469,7 +468,6 @@ export const LandingPage: FC<{ origin: string }> = ({ origin }) => (
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1" />
       <title>FormRelay — Forms in. Data anywhere.</title>
-      <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700&display=swap" />
       <style dangerouslySetInnerHTML={{ __html: LAND_CSS }} />
     </head>
     <body>
@@ -525,7 +523,7 @@ export const LandingPage: FC<{ origin: string }> = ({ origin }) => (
 );
 
 const LAND_CSS = String.raw`
-body{margin:0;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#fff;color:#37352f;-webkit-font-smoothing:antialiased;line-height:1.55}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#fff;color:#37352f;-webkit-font-smoothing:antialiased;line-height:1.55}
 .lnav{position:fixed;top:0;left:0;right:0;display:flex;justify-content:space-between;align-items:center;padding:14px 28px;background:rgba(255,255,255,.85);backdrop-filter:blur(6px);border-bottom:1px solid #e9e9e7;z-index:10}
 .logo-mark{width:26px;height:26px;border-radius:6px;background:#37352f;color:#fff;display:inline-flex;align-items:center;justify-content:center}
 .wordmark{font-weight:650;font-size:15px}

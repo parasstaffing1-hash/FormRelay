@@ -36,8 +36,10 @@ export const AppShell: FC<
     formCount: number;
     submissionCount: number;
     commands: CommandItem[];
+    /** Opt into the full-width canvas for tool pages like the builder. */
+    wide?: boolean;
   }>
-> = ({ path, crumbs, actions, toastMsg, formCount, submissionCount, commands, children }) => {
+> = ({ path, crumbs, actions, toastMsg, formCount, submissionCount, commands, wide, children }) => {
   const sections: NavSection[] = [
     { items: [{ label: "Home", href: "/admin", icon: <IconHome />, match: (p) => p === "/admin" }] },
     {
@@ -86,9 +88,6 @@ export const AppShell: FC<
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>{crumbs[crumbs.length - 1]?.label ?? "FormRelay"} · FormRelay</title>
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
-        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;550;600;650;700&display=swap" />
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOT }} />
         <style dangerouslySetInnerHTML={{ __html: CSS }} />
       </head>
@@ -185,7 +184,7 @@ export const AppShell: FC<
                 </a>
               </div>
             </header>
-            <main class="page" id="main">{children}</main>
+            <main class={wide ? "page page-wide" : "page"} id="main">{children}</main>
           </div>
         </div>
 

@@ -133,8 +133,8 @@ async function contentSecurityPolicy(): Promise<string> {
       const hash = btoa(String.fromCharCode(...new Uint8Array(digest)));
       return [
         "default-src 'self'",
-        "style-src 'self' https://fonts.googleapis.com 'unsafe-inline'",
-        "font-src 'self' https://fonts.gstatic.com",
+        "style-src 'self' 'unsafe-inline'",
+        "font-src 'self'",
         "img-src 'self' https: data:",
         `script-src 'self' 'sha256-${hash}'`,
         "connect-src 'self' https:",

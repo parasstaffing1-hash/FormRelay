@@ -28,6 +28,7 @@ export const BuilderPage: FC<Props> = ({ form, schema, origin: _origin, toastMsg
 
   return (
     <AppShell
+      wide
       path={`/admin/forms/${form.id}/build`}
       crumbs={[
         { label: "Forms", href: "/admin/forms" },
