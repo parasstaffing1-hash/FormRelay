@@ -79,7 +79,8 @@ CREATE TABLE IF NOT EXISTS forms (
   submission_limit INTEGER,
   closed_message TEXT NOT NULL DEFAULT '',
   one_per_respondent INTEGER NOT NULL DEFAULT 0,
-  workspace_id TEXT NOT NULL DEFAULT 'ws_default'
+  workspace_id TEXT NOT NULL DEFAULT 'ws_default',
+  prefill_signed_only INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_forms_slug ON forms (slug) WHERE slug IS NOT NULL AND slug != '';
@@ -122,8 +123,14 @@ CREATE TABLE IF NOT EXISTS submissions (
   completed_at INTEGER,
   updated_at INTEGER,
   tags_json TEXT NOT NULL DEFAULT '[]',
-  note TEXT NOT NULL DEFAULT ''
+  note TEXT NOT NULL DEFAULT '',
+  prev_hash TEXT NOT NULL DEFAULT '',
+  row_hash TEXT NOT NULL DEFAULT '',
+  receipt_token_hash TEXT,
+  erased_at INTEGER
 );
+
+CREATE INDEX IF NOT EXISTS idx_submissions_receipt ON submissions (receipt_token_hash);
 
 CREATE INDEX IF NOT EXISTS idx_submissions_form ON submissions (form_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_submissions_ip_time ON submissions (ip, created_at);
@@ -249,3 +256,15 @@ CREATE TABLE IF NOT EXISTS login_attempts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts (ip, created_at DESC);
+
+
+CREATE TABLE IF NOT EXISTS chain_anchors (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  form_id TEXT NOT NULL DEFAULT '',
+  head_hash TEXT NOT NULL,
+  row_count INTEGER NOT NULL,
+  signature TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chain_anchors_form ON chain_anchors (form_id, created_at DESC);

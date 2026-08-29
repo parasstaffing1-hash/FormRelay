@@ -76,6 +76,10 @@ Legend — **DONE** = UI works + backend works + data persists + errors handled 
 | AI features (prompt→form, suggestions) | NOT IMPLEMENTED | — | Fillout | provider-agnostic AI | P2 | — | — |
 | Offline collection (PWA) | NOT IMPLEMENTED | — | — | — | P2 | — | — |
 | Rate limit (API keys) | PARTIAL | 3 | — | cross-isolate (DO/KV) | P2 | Durable Object | — |
+| **Tamper-evident response log** (hash chain + anchors) | DONE | 4 | *none* | expose a public verification endpoint | P1 | schema | unit + smoke |
+| **Respondent receipt portal** (view/export/erase, no account) | DONE | 4 | *none* | per-form toggle, receipt in auto-reply email | P1 | schema | smoke |
+| **Signed prefill links** | DONE | 4 | *none* | expiry on signed links | P1 | — | unit + smoke |
+| **Version diff view** | DONE | 4 | *none* | inline diff on the versions list | P2 | form_versions | unit + smoke |
 | CSRF protections | DONE | 4 | — | nonce tokens only if a cross-origin POST flow is added | P0 | — | smoke ✅ |
 | XSS hardening | DONE | 5 | — | `style-src` still needs `'unsafe-inline'` for inline style attributes | P0 | — | smoke ✅ |
 | Password hashing (salted PBKDF2) | DONE | 5 | — | — | P0 | — | unit ✅ |

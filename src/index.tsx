@@ -71,6 +71,12 @@ import {
   getMembership,
   updateSubmissionMeta,
   updateUserPassword,
+  getSubmissionByReceiptHash,
+  eraseSubmissionByReceipt,
+  chainLinks,
+  listAnchors,
+  recordAnchor,
+  setFormPrefillSignedOnly,
 } from "./db";
 import apiApp from "./api";
 import { spillIfLarge, resolveSpilledData } from "./spill";
@@ -78,6 +84,8 @@ import { parseSchema, emptySchema, validateBlockValue, isSchemaV2 } from "./bloc
 import { evaluateRules, pipeText, validateSchemaV2, resolveVariables, selectEnding } from "./logic";
 import { executeWorkflow } from "./workflow-engine";
 import { checkFormHealth } from "./health";
+import { verifyChain, verifyPrefill, buildPrefillUrl, PREFILL_SIG_PARAM } from "./integrity";
+import { diffSchemas, summarizeDiff } from "./diff";
 import { PublicFormPage, FORM_RUNTIME_JS } from "./pages/public-form";
 import { BuilderPage, BUILDER_JS } from "./pages/builder";
 import { audit } from "./audit";
@@ -262,6 +270,16 @@ async function clearLoginFailures(db: D1Database, ip: string): Promise<void> {
   await db.prepare("DELETE FROM login_attempts WHERE ip = ?").bind(ip).run();
 }
 
+/**
+ * Respondent-facing receipt link. Shown once, on the acknowledgement, because the token
+ * is the only thing that authorises access to that response.
+ */
+function receiptLinkHtml(origin: string, token: string): string {
+  if (!token) return "";
+  const href = `${origin}/r/${token}`;
+  return `<p style="color:#787774;font-size:12.5px;margin-top:22px;line-height:1.6">Keep this link to view, export, or delete your response:<br><a href="${escapeHtml(href)}" style="color:#2383e2;word-break:break-all">${escapeHtml(href)}</a></p>`;
+}
+
 function newResumeToken(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(24));
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
@@ -276,6 +294,16 @@ function valuesFromStored(raw: string): Record<string, string> {
       out[key] = Array.isArray(value) ? value.map(String).join(", ") : value == null ? "" : String(value);
     }
     return out;
+  } catch { return {}; }
+}
+
+/** Field-id to human-label map that schema-v2 submissions carry alongside their answers. */
+function labelsFromStored(raw: string): Record<string, string> {
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const labels = parsed._labels;
+    if (!labels || typeof labels !== "object") return {};
+    return Object.fromEntries(Object.entries(labels as Record<string, unknown>).map(([key, value]) => [key, String(value)]));
   } catch { return {}; }
 }
 
@@ -545,17 +573,21 @@ app.post("/f/:id", async (c) => {
       }
     }
     const resumeToken = typeof rawPayload._resume === "string" ? rawPayload._resume : "";
+    // Every non-spam response gets a receipt token so the respondent can later view,
+    // export, or erase their own submission without holding an account.
+    const receiptToken = verdict.spam ? "" : newResumeToken();
+    const receiptHash = receiptToken ? await sha256Hex(receiptToken) : null;
     let submissionId: number | null = null;
     if (!verdict.spam && resumeToken) {
       const existing = await getSubmissionByResumeHash(c.env.DB, await sha256Hex(resumeToken));
       if (existing && existing.form_id === formId) {
-        await completeSubmission(c.env.DB, existing.id, toStoreSchema);
+        await completeSubmission(c.env.DB, existing.id, toStoreSchema, receiptHash);
         submissionId = existing.id;
       } else {
-        submissionId = await insertSubmission(c.env.DB, formId, toStoreSchema, ip, userAgent, referer, verdict.spam);
+        submissionId = await insertSubmission(c.env.DB, formId, toStoreSchema, ip, userAgent, referer, verdict.spam, receiptHash);
       }
     } else {
-      submissionId = await insertSubmission(c.env.DB, formId, toStoreSchema, ip, userAgent, referer, verdict.spam);
+      submissionId = await insertSubmission(c.env.DB, formId, toStoreSchema, ip, userAgent, referer, verdict.spam, receiptHash);
     }
     if (!verdict.spam && form.one_per_respondent === 1) setCookie(c, `fr_responded_${formId}`, "1", { httpOnly: true, sameSite: "Lax", path: `/f/${formId}`, maxAge: 31536000 });
     if (c.env.FILES && uploads.length > 0 && !verdict.spam) {
@@ -583,7 +615,7 @@ app.post("/f/:id", async (c) => {
         ])
       );
     }
-    if (isJson) return c.json({ ok: true });
+    if (isJson) return c.json(receiptToken ? { ok: true, receipt: `${originOf(c.req.url)}/r/${receiptToken}` } : { ok: true });
     const ackContext = { answers: rawPayload, variables: smartVariables, url: Object.fromEntries(new URL(c.req.url).searchParams.entries()), meta: {} };
     const dynamicRedirect = isSchemaV2(schema) && smartState?.redirect ? smartState.redirect : "";
     const endingRedirect = selectedEnding?.redirectUrl ? pipeText(selectedEnding.redirectUrl, ackContext) : "";
@@ -594,11 +626,11 @@ app.post("/f/:id", async (c) => {
       const heading = selectedEnding?.title ? pipeText(selectedEnding.title, ackContext) : (smartState?.disqualified ? "Not eligible" : "Thank you!");
       const safe = escapeHtml(msg);
       return c.html(
-        `<!doctype html><body style="font-family:system-ui,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;background:#fff;color:#37352f"><div style="text-align:center;max-width:520px;padding:24px"><div style="font-size:34px;margin-bottom:8px">&#10003;</div><h1 style="font-size:20px;font-weight:600">${escapeHtml(heading)}</h1><p style="color:#37352f;font-size:14px;margin-top:8px;white-space:pre-wrap">${safe}</p></div></body>`
+        `<!doctype html><body style="font-family:system-ui,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;background:#fff;color:#37352f"><div style="text-align:center;max-width:520px;padding:24px"><div style="font-size:34px;margin-bottom:8px">&#10003;</div><h1 style="font-size:20px;font-weight:600">${escapeHtml(heading)}</h1><p style="color:#37352f;font-size:14px;margin-top:8px;white-space:pre-wrap">${safe}</p>${receiptLinkHtml(originOf(c.req.url), receiptToken)}</div></body>`
       );
     }
     return c.html(
-      `<!doctype html><body style="font-family:system-ui,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;background:#fff;color:#37352f"><div style="text-align:center"><div style="font-size:34px;margin-bottom:8px">&#10003;</div><h1 style="font-size:20px;font-weight:600">Thank you!</h1><p style="color:#787774;font-size:14px">Your submission has been received.</p></div></body>`
+      `<!doctype html><body style="font-family:system-ui,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;background:#fff;color:#37352f"><div style="text-align:center;max-width:520px;padding:24px"><div style="font-size:34px;margin-bottom:8px">&#10003;</div><h1 style="font-size:20px;font-weight:600">Thank you!</h1><p style="color:#787774;font-size:14px">Your submission has been received.</p>${receiptLinkHtml(originOf(c.req.url), receiptToken)}</div></body>`
     );
   }
 
@@ -687,6 +719,13 @@ app.get("/f/:id", async (c) => {
   }
   const schema = parseSchema(form.published_json);
   let values = urlValues(new URL(c.req.url));
+  // When a form requires signed prefill, unsigned or edited values are discarded rather
+  // than trusted, so a shared link cannot be doctored to change what it pre-populates.
+  if (form.prefill_signed_only === 1 && Object.keys(values).length > 0) {
+    const signature = new URL(c.req.url).searchParams.get(PREFILL_SIG_PARAM) ?? "";
+    const secret = c.env.PREFILL_SECRET || c.env.SESSION_SECRET;
+    if (!(await verifyPrefill(values, signature, secret))) values = {};
+  }
   const resume = new URL(c.req.url).searchParams.get("resume");
   if (resume) {
     const partial = await getSubmissionByResumeHash(c.env.DB, await sha256Hex(resume));
@@ -760,6 +799,72 @@ app.post("/invite/:token", async (c) => {
   const user = await acceptInvitation(c.env.DB, invite, name, await hashPassword(password));
   setSessionCookie(c, await makeUserSessionToken(user.id, invite.workspace_id, c.env.SESSION_SECRET));
   return c.redirect("/admin?msg=Invitation+accepted");
+});
+
+/* ---------- respondent receipt portal ---------- */
+
+/**
+ * Lets a respondent see, export, and erase their own response with nothing but the
+ * receipt link they were given at submit time. No account, no login. This is what makes
+ * GDPR access/erasure requests self-service instead of a manual task for the form owner.
+ */
+function receiptPage(body: string, title = "Your response"): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)}</title></head><body style="margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;background:#f7f6f3;color:#37352f"><div style="max-width:640px;margin:0 auto;padding:48px 20px 80px">${body}</div></body></html>`;
+}
+
+app.get("/r/:token", async (c) => {
+  const submission = await getSubmissionByReceiptHash(c.env.DB, await sha256Hex(c.req.param("token")));
+  if (!submission) {
+    return c.html(receiptPage(`<h1 style="font-size:24px;font-weight:700">Response not found</h1><p style="color:rgba(55,53,47,.65);font-size:14px;margin-top:8px">This link is invalid, or the response has already been deleted.</p>`, "Response not found"), 404);
+  }
+  const form = await getForm(c.env.DB, submission.form_id);
+  const raw = await resolveSpilledData(c.env, submission.data);
+  const values = valuesFromStored(raw);
+  const labels = labelsFromStored(raw);
+  const token = c.req.param("token");
+
+  const rows = Object.entries(values)
+    .map(([key, value]) => `<div style="display:flex;gap:16px;padding:10px 0;border-bottom:1px solid rgba(55,53,47,.09)"><div style="width:190px;flex-shrink:0;color:rgba(55,53,47,.65);font-size:13px">${escapeHtml(labels[key] || key)}</div><div style="font-size:14px;white-space:pre-wrap;word-break:break-word">${escapeHtml(value) || "—"}</div></div>`)
+    .join("");
+
+  return c.html(receiptPage(`
+    <h1 style="font-size:32px;font-weight:700;letter-spacing:-.02em">Your response</h1>
+    <p style="color:rgba(55,53,47,.65);font-size:14px;margin-top:8px">Submitted to <strong>${escapeHtml(form?.name ?? "a form")}</strong> on ${new Date(submission.created_at).toUTCString()}.</p>
+    <div style="background:#fff;border:1px solid rgba(55,53,47,.09);border-radius:4px;padding:4px 16px;margin-top:26px">${rows || '<p style="padding:14px 0;color:rgba(55,53,47,.45);font-size:14px">This response has no stored fields.</p>'}</div>
+    <div style="display:flex;gap:10px;margin-top:22px;flex-wrap:wrap">
+      <a href="/r/${escapeHtml(token)}/export" style="display:inline-flex;align-items:center;height:32px;padding:0 12px;border:1px solid rgba(55,53,47,.16);border-radius:4px;font-size:14px;color:#37352f;text-decoration:none">Download a copy (JSON)</a>
+      <form method="post" action="/r/${escapeHtml(token)}/erase" data-confirm="Permanently delete your response? This cannot be undone." style="margin:0">
+        <button type="submit" style="height:32px;padding:0 12px;border:1px solid rgba(55,53,47,.16);border-radius:4px;background:#fff;font:inherit;font-size:14px;color:#c4453d;cursor:pointer">Delete my response</button>
+      </form>
+    </div>
+    <p style="color:rgba(55,53,47,.45);font-size:12px;margin-top:26px;line-height:1.6">Anyone with this link can view and delete this response, so treat it like a password. Deleting erases your answers permanently; the form owner keeps only a record that a response existed here.</p>
+    <script src="/assets/guards.js" defer></script>
+  `));
+});
+
+app.get("/r/:token/export", async (c) => {
+  const submission = await getSubmissionByReceiptHash(c.env.DB, await sha256Hex(c.req.param("token")));
+  if (!submission) return c.text("This link is invalid, or the response has already been deleted.", 404);
+  const raw = await resolveSpilledData(c.env, submission.data);
+  const values = valuesFromStored(raw);
+  const labels = labelsFromStored(raw);
+  const payload = {
+    submitted_at: new Date(submission.created_at).toISOString(),
+    form_id: submission.form_id,
+    fields: Object.fromEntries(Object.entries(values).map(([key, value]) => [labels[key] || key, value])),
+  };
+  return new Response(JSON.stringify(payload, null, 2), {
+    headers: { "content-type": "application/json; charset=utf-8", "content-disposition": `attachment; filename="response-${submission.id}.json"` },
+  });
+});
+
+app.post("/r/:token/erase", async (c) => {
+  if (sameOriginCheck(c) !== "ok") return c.text("Cross-origin erasure request rejected.", 403);
+  const token = c.req.param("token");
+  const erased = await eraseSubmissionByReceipt(c.env.DB, await sha256Hex(token));
+  if (!erased) return c.text("This link is invalid, or the response has already been deleted.", 404);
+  await audit(c.env.DB, "response.erased.by_respondent", token.slice(0, 6), "respondent erased their own response");
+  return c.html(receiptPage(`<h1 style="font-size:32px;font-weight:700;letter-spacing:-.02em">Response deleted</h1><p style="color:rgba(55,53,47,.65);font-size:14px;margin-top:8px">Your answers have been permanently erased. This link no longer works.</p>`, "Response deleted"));
 });
 
 /* ---------- admin auth gate ---------- */
@@ -889,6 +994,211 @@ app.get("/admin/forms/:id/versions", async (c) => {
   if (!form) return c.notFound();
   const versions = await listFormVersions(c.env.DB, form.id, 50);
   return c.html(<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Version history · {form.name}</title><style dangerouslySetInnerHTML={{ __html: CSS }} /></head><body style="font-family:system-ui;max-width:820px;margin:40px auto;padding:0 20px"><p><a href={`/admin/forms/${form.id}/build`}>← Back to builder</a></p><h1>Version history</h1><p class="muted">Saved schema snapshots for {form.name}. Restoring a version replaces the current draft and published copy.</p>{versions.length ? <div class="card card-b">{versions.map((version) => <div class="kv" style="align-items:center"><div><strong>Version {version.id}</strong><div class="muted small">{new Date(version.created_at).toISOString()} · {version.created_by}</div></div><form method="post" action={`/admin/forms/${form.id}/versions/${version.id}/restore`} data-confirm="Restore this version?"><button class="btn btn-secondary btn-sm" type="submit">Restore</button></form></div>)}</div> : <p>No snapshots yet. Saving the builder will create the first snapshot.</p>}<script src="/assets/guards.js" defer /></body></html>);
+});
+
+app.get("/admin/forms/:id/prefill", async (c) => {
+  const form = await getForm(c.env.DB, c.req.param("id"));
+  if (!form) return c.notFound();
+  const schema = parseSchema(form.published_json) ?? parseSchema(form.schema_json);
+  const fields = (schema?.blocks ?? []).filter((block) => !["heading", "paragraph", "divider", "page"].includes(block.type));
+  const url = new URL(c.req.url);
+  const supplied: Record<string, string> = {};
+  for (const block of fields) {
+    const value = url.searchParams.get(block.id);
+    if (value) supplied[block.id] = value;
+  }
+  const secret = c.env.PREFILL_SECRET || c.env.SESSION_SECRET;
+  const base = `${originOf(c.req.url)}/f/${form.id}`;
+  const link = Object.keys(supplied).length ? await buildPrefillUrl(base, supplied, secret) : "";
+
+  return c.html(
+    <AppShell
+      path={`/admin/forms/${form.id}/prefill`}
+      crumbs={[{ label: "Forms", href: "/admin/forms" }, { label: form.name, href: `/admin/forms/${form.id}` }, { label: "Prefill" }]}
+      toastMsg={msgFrom(c)}
+      commands={baseCommands(originOf(c.req.url))}
+      formCount={0}
+      submissionCount={0}
+    >
+      <PageHead title="Signed prefill link" sub="Pre-populate a form with values the recipient cannot edit. The signature covers every value, so changing one invalidates the link." />
+
+      <div class="card" style="max-width:660px">
+        <div class="card-h">Enforcement</div>
+        <div class="card-b">
+          <form method="post" action={`/admin/forms/${form.id}/prefill/mode`}>
+            <label class="checkbox-row">
+              <input type="checkbox" name="signed_only" checked={form.prefill_signed_only === 1} />
+              <span>Reject unsigned prefill values on this form</span>
+            </label>
+            <p class="hint" style="margin-top:8px">With this off, anyone can prefill any field by editing the query string — the default behaviour, and the same as every other form tool.</p>
+            <div style="margin-top:12px"><Button type="submit">Save</Button></div>
+          </form>
+        </div>
+      </div>
+
+      <div class="section-title">Generate a link</div>
+      {fields.length === 0 ? (
+        <div class="card" style="max-width:660px"><div class="card-b"><p class="small muted">Publish a visual schema to generate prefill links.</p></div></div>
+      ) : (
+        <div class="card" style="max-width:660px">
+          <div class="card-b">
+            <form method="get" action={`/admin/forms/${form.id}/prefill`}>
+              {fields.map((block) => (
+                <div class="field">
+                  <label for={`pf_${block.id}`}>{block.label || block.id}</label>
+                  <input class="input" id={`pf_${block.id}`} name={block.id} value={supplied[block.id] ?? ""} placeholder="Leave empty to omit" />
+                </div>
+              ))}
+              <Button type="submit">Build signed link</Button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {link ? (
+        <div class="card" style="max-width:660px;margin-top:14px">
+          <div class="card-h">Your link</div>
+          <div class="card-b">
+            <div class="mono small" style="word-break:break-all">{link}</div>
+          </div>
+        </div>
+      ) : null}
+    </AppShell>
+  );
+});
+
+app.post("/admin/forms/:id/prefill/mode", async (c) => {
+  const id = c.req.param("id");
+  if (!(await getForm(c.env.DB, id))) return c.notFound();
+  const body = await c.req.parseBody();
+  await setFormPrefillSignedOnly(c.env.DB, id, body.signed_only === "on");
+  await audit(c.env.DB, "form.prefill.mode", id, body.signed_only === "on" ? "signed only" : "open");
+  return c.redirect(`/admin/forms/${id}/prefill?msg=${encodeURIComponent("Prefill settings saved")}`);
+});
+
+app.get("/admin/forms/:id/integrity", async (c) => {
+  const form = await getForm(c.env.DB, c.req.param("id"));
+  if (!form) return c.notFound();
+  const links = await chainLinks(c.env.DB, form.id);
+  const verdict = await verifyChain(links);
+  const anchors = await listAnchors(c.env.DB, form.id, 10);
+  const unsealed = links.filter((link) => !link.row_hash).length;
+
+  const tone = verdict.ok ? "#18794e" : "#b42318";
+  const headline = verdict.ok
+    ? `Intact — ${verdict.checked} response${verdict.checked === 1 ? "" : "s"} verified`
+    : `Broken at response ${verdict.brokenAt}`;
+
+  return c.html(
+    <AppShell
+      path={`/admin/forms/${form.id}/integrity`}
+      crumbs={[{ label: "Forms", href: "/admin/forms" }, { label: form.name, href: `/admin/forms/${form.id}` }, { label: "Integrity" }]}
+      toastMsg={msgFrom(c)}
+      commands={baseCommands(originOf(c.req.url))}
+      formCount={0}
+      submissionCount={0}
+    >
+      <PageHead title="Response integrity" sub="Each response commits to the one before it, so any later edit, deletion, or back-dating is detectable." />
+      <div class="card" style="max-width:760px">
+        <div class="card-b">
+          <div style={`font-size:15px;font-weight:600;color:${tone}`}>{headline}</div>
+          {verdict.ok ? (
+            <p class="small muted" style="margin-top:6px">Chain head <span class="mono">{verdict.head.slice(0, 24)}…</span></p>
+          ) : (
+            <p class="small" style="margin-top:6px">{verdict.reason}</p>
+          )}
+          {verdict.erased > 0 ? (
+            <p class="small muted" style="margin-top:10px">{verdict.erased} response{verdict.erased === 1 ? " was" : "s were"} erased at the respondent request. Those rows keep their original digest as a tombstone, so the chain still verifies through them.</p>
+          ) : null}
+          {unsealed > 0 ? (
+            <p class="small muted" style="margin-top:10px">{unsealed} response{unsealed === 1 ? " was" : "s were"} recorded before the chain was enabled and {unsealed === 1 ? "is" : "are"} not covered.</p>
+          ) : null}
+        </div>
+      </div>
+
+      <div class="section-title">Anchors</div>
+      <p class="small muted" style="margin-top:-4px;margin-bottom:12px">An anchor records the chain head at a point in time. Publish or archive one and you can later prove the log you have today is the same log you had then.</p>
+      <form method="post" action={`/admin/forms/${form.id}/integrity/anchor`}>
+        <Button variant="secondary" type="submit">Record an anchor now</Button>
+      </form>
+      <div class="card" style="max-width:760px;margin-top:14px">
+        {anchors.length ? anchors.map((anchor) => (
+          <div class="list-item">
+            <div style="min-width:0">
+              <div class="mono small" style="word-break:break-all">{anchor.head_hash.slice(0, 40)}…</div>
+              <div class="cell-sub">{anchor.row_count} response{anchor.row_count === 1 ? "" : "s"} · {new Date(anchor.created_at).toUTCString()}</div>
+            </div>
+          </div>
+        )) : <div class="card-b"><p class="small muted">No anchors recorded yet.</p></div>}
+      </div>
+    </AppShell>
+  );
+});
+
+app.post("/admin/forms/:id/integrity/anchor", async (c) => {
+  const form = await getForm(c.env.DB, c.req.param("id"));
+  if (!form) return c.notFound();
+  const links = await chainLinks(c.env.DB, form.id);
+  const verdict = await verifyChain(links);
+  // Signed with SESSION_SECRET so an anchor cannot be forged by someone who only has
+  // write access to the database.
+  const signature = await hmacSign(`${verdict.head}.${verdict.checked}`, c.env.SESSION_SECRET);
+  await recordAnchor(c.env.DB, form.id, verdict.head, verdict.checked, signature);
+  await audit(c.env.DB, "integrity.anchor.recorded", form.id, `head ${verdict.head.slice(0, 16)}`);
+  return c.redirect(`/admin/forms/${form.id}/integrity?msg=${encodeURIComponent("Anchor recorded")}`);
+});
+
+app.get("/admin/forms/:id/versions/:a/compare/:b", async (c) => {
+  const form = await getForm(c.env.DB, c.req.param("id"));
+  if (!form) return c.notFound();
+  const [left, right] = await Promise.all([
+    getFormVersion(c.env.DB, Number(c.req.param("a"))),
+    getFormVersion(c.env.DB, Number(c.req.param("b"))),
+  ]);
+  if (!left || !right || left.form_id !== form.id || right.form_id !== form.id) return c.notFound();
+  const diff = diffSchemas(left.schema_json, right.schema_json);
+
+  return c.html(
+    <AppShell
+      path={`/admin/forms/${form.id}/versions`}
+      crumbs={[{ label: "Forms", href: "/admin/forms" }, { label: form.name, href: `/admin/forms/${form.id}` }, { label: "Compare" }]}
+      commands={baseCommands(originOf(c.req.url))}
+      formCount={0}
+      submissionCount={0}
+    >
+      <PageHead title={`Version ${left.id} → ${right.id}`} sub={summarizeDiff(diff)} />
+      {diff.identical ? (
+        <div class="card" style="max-width:760px"><div class="card-b"><p class="small muted">These two versions are identical.</p></div></div>
+      ) : (
+        <div class="card" style="max-width:820px">
+          {diff.blocks.map((block) => (
+            <div class="list-item" style="align-items:flex-start">
+              <div style="width:88px;flex-shrink:0">
+                <span class={`badge ${block.kind === "added" ? "badge-success" : block.kind === "removed" ? "badge-danger" : block.kind === "changed" ? "badge-warning" : "badge-neutral"}`}>{block.kind}</span>
+              </div>
+              <div style="min-width:0">
+                <div class="cell-main">{block.label}</div>
+                {block.kind === "changed" ? block.changes.map((change) => (
+                  <div class="cell-sub"><span class="mono">{change.key}</span>: {change.before} → {change.after}</div>
+                )) : null}
+                {block.kind === "moved" ? <div class="cell-sub">position {block.from} → {block.to}</div> : null}
+                {block.kind === "added" || block.kind === "removed" ? <div class="cell-sub">{block.type}</div> : null}
+              </div>
+            </div>
+          ))}
+          {diff.settings.map((change) => (
+            <div class="list-item" style="align-items:flex-start">
+              <div style="width:88px;flex-shrink:0"><span class="badge badge-neutral">setting</span></div>
+              <div style="min-width:0">
+                <div class="cell-main">{change.key}</div>
+                <div class="cell-sub">{change.before} → {change.after}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </AppShell>
+  );
 });
 
 app.post("/admin/forms/:id/versions/:versionId/restore", async (c) => {

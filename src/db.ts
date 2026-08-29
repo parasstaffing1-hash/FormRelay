@@ -3,6 +3,7 @@ import {
   WebhookRow, WebhookWithContext, DeliveryRow, DashboardStats,
   ApiKeyRow, WorkflowRow, WorkflowRunRow, WorkflowStepRow, UserRow, MembershipRow, InvitationRow,
 } from "./types";
+import { ChainLink, computeRowHash, genesisHash } from "./integrity";
 
 const ALPHABET = "abcdefghijkmnopqrstuvwxyz23456789";
 
@@ -135,6 +136,22 @@ export async function deleteForm(db: D1Database, id: string): Promise<void> {
 
 /* ================= submissions ================= */
 
+export async function chainHead(db: D1Database): Promise<string> {
+  const row = await db
+    .prepare("SELECT row_hash FROM submissions WHERE row_hash != '' ORDER BY id DESC LIMIT 1")
+    .first<{ row_hash: string }>();
+  return row?.row_hash || genesisHash();
+}
+
+/**
+ * Seals a freshly inserted row into the tamper-evident chain. The id is only known
+ * after the insert, so the digest is written back in a second statement.
+ */
+async function sealSubmission(db: D1Database, id: number, formId: string, data: string, createdAt: number, prevHash: string): Promise<void> {
+  const rowHash = await computeRowHash({ id, form_id: formId, data, created_at: createdAt, prev_hash: prevHash });
+  await db.prepare("UPDATE submissions SET prev_hash = ?, row_hash = ? WHERE id = ?").bind(prevHash, rowHash, id).run();
+}
+
 export async function insertSubmission(
   db: D1Database,
   formId: string,
@@ -142,14 +159,19 @@ export async function insertSubmission(
   ip: string,
   userAgent: string,
   referer: string,
-  isSpam: boolean
+  isSpam: boolean,
+  receiptTokenHash: string | null = null
 ): Promise<number | null> {
   const now = Date.now();
+  const payload = JSON.stringify(data);
+  const prevHash = await chainHead(db);
   const result = await db
-    .prepare("INSERT INTO submissions (form_id, data, ip, user_agent, referer, is_spam, created_at, status, completed_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-    .bind(formId, JSON.stringify(data), ip, userAgent, referer, isSpam ? 1 : 0, now, isSpam ? "spam" : "completed", isSpam ? null : now, now)
+    .prepare("INSERT INTO submissions (form_id, data, ip, user_agent, referer, is_spam, created_at, status, completed_at, updated_at, receipt_token_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .bind(formId, payload, ip, userAgent, referer, isSpam ? 1 : 0, now, isSpam ? "spam" : "completed", isSpam ? null : now, now, receiptTokenHash)
     .run();
-  return result.meta?.last_row_id ?? null;
+  const id = result.meta?.last_row_id ?? null;
+  if (id !== null) await sealSubmission(db, id, formId, payload, now, prevHash);
+  return id;
 }
 
 export async function insertPartialSubmission(
@@ -179,10 +201,17 @@ export async function updatePartialSubmission(db: D1Database, id: number, data: 
     .bind(JSON.stringify(data), Date.now(), id).run();
 }
 
-export async function completeSubmission(db: D1Database, id: number, data: Record<string, unknown>): Promise<void> {
+export async function completeSubmission(db: D1Database, id: number, data: Record<string, unknown>, receiptTokenHash: string | null = null): Promise<void> {
   const now = Date.now();
-  await db.prepare("UPDATE submissions SET data = ?, status = 'completed', completed_at = ?, updated_at = ?, resume_revoked = 1 WHERE id = ? AND status = 'partial' AND resume_revoked = 0")
-    .bind(JSON.stringify(data), now, now, id).run();
+  const payload = JSON.stringify(data);
+  const prevHash = await chainHead(db);
+  const result = await db.prepare("UPDATE submissions SET data = ?, status = 'completed', completed_at = ?, updated_at = ?, resume_revoked = 1, receipt_token_hash = COALESCE(?, receipt_token_hash) WHERE id = ? AND status = 'partial' AND resume_revoked = 0")
+    .bind(payload, now, now, receiptTokenHash, id).run();
+  // A partial only joins the chain once it is completed, so its digest is written here.
+  if (result.meta?.changes) {
+    const row = await db.prepare("SELECT form_id, created_at FROM submissions WHERE id = ?").bind(id).first<{ form_id: string; created_at: number }>();
+    if (row) await sealSubmission(db, id, row.form_id, payload, row.created_at, prevHash);
+  }
 }
 
 export async function countCompletedForForm(db: D1Database, formId: string): Promise<number> {
@@ -668,4 +697,45 @@ export async function restoreFormVersion(db: D1Database, formId: string, version
 
 export async function updateUserPassword(db: D1Database, userId: string, passwordHash: string): Promise<void> {
   await db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").bind(passwordHash, userId).run();
+}
+
+/* ---------- tamper-evident chain ---------- */
+
+export async function chainLinks(db: D1Database, formId?: string): Promise<ChainLink[]> {
+  const { results } = formId
+    ? await db.prepare("SELECT id, form_id, data, created_at, prev_hash, row_hash, erased_at FROM submissions WHERE form_id = ? ORDER BY id ASC").bind(formId).all<ChainLink>()
+    : await db.prepare("SELECT id, form_id, data, created_at, prev_hash, row_hash, erased_at FROM submissions ORDER BY id ASC").all<ChainLink>();
+  return results ?? [];
+}
+
+export async function recordAnchor(db: D1Database, formId: string, headHash: string, rowCount: number, signature: string): Promise<void> {
+  await db.prepare("INSERT INTO chain_anchors (form_id, head_hash, row_count, signature, created_at) VALUES (?, ?, ?, ?, ?)")
+    .bind(formId, headHash, rowCount, signature, Date.now()).run();
+}
+
+export async function listAnchors(db: D1Database, formId = "", limit = 10): Promise<{ id: number; form_id: string; head_hash: string; row_count: number; signature: string; created_at: number }[]> {
+  const { results } = await db.prepare("SELECT * FROM chain_anchors WHERE form_id = ? ORDER BY created_at DESC LIMIT ?").bind(formId, limit).all<any>();
+  return results ?? [];
+}
+
+/* ---------- respondent receipts ---------- */
+
+export async function getSubmissionByReceiptHash(db: D1Database, tokenHash: string): Promise<SubmissionRow | null> {
+  return await db.prepare("SELECT * FROM submissions WHERE receipt_token_hash = ? AND erased_at IS NULL").bind(tokenHash).first<SubmissionRow>();
+}
+
+/**
+ * Respondent-initiated erasure (GDPR art. 17). The row is kept as a tombstone so the
+ * hash chain stays verifiable; only the answer content is destroyed.
+ */
+export async function eraseSubmissionByReceipt(db: D1Database, tokenHash: string): Promise<boolean> {
+  const now = Date.now();
+  const result = await db.prepare(
+    "UPDATE submissions SET data = '{}', ip = '', user_agent = '', referer = '', note = '', tags_json = '[]', erased_at = ?, updated_at = ? WHERE receipt_token_hash = ? AND erased_at IS NULL"
+  ).bind(now, now, tokenHash).run();
+  return !!result.meta?.changes;
+}
+
+export async function setFormPrefillSignedOnly(db: D1Database, formId: string, on: boolean): Promise<void> {
+  await db.prepare("UPDATE forms SET prefill_signed_only = ? WHERE id = ?").bind(on ? 1 : 0, formId).run();
 }
