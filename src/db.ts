@@ -665,3 +665,7 @@ export async function restoreFormVersion(db: D1Database, formId: string, version
   await db.prepare("UPDATE forms SET schema_json = ?, published_json = ?, status = CASE WHEN ? IS NULL THEN 'draft' ELSE 'published' END WHERE id = ?").bind(version.schema_json, version.published_json ?? null, version.published_json ?? null, formId).run();
   return true;
 }
+
+export async function updateUserPassword(db: D1Database, userId: string, passwordHash: string): Promise<void> {
+  await db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").bind(passwordHash, userId).run();
+}

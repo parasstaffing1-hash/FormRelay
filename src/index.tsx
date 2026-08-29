@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { Bindings, FormRow, SubmissionRow } from "./types";
-import { hmacSign, hmacVerify, csvCell, escapeHtml } from "./util";
+import { hmacSign, hmacVerify, csvCell, escapeHtml, hashPassword, verifyPassword, timingSafeEqual } from "./util";
 import {
   createForm,
   duplicateForm,
@@ -70,6 +70,7 @@ import {
   deleteMembership,
   getMembership,
   updateSubmissionMeta,
+  updateUserPassword,
 } from "./db";
 import apiApp from "./api";
 import { spillIfLarge, resolveSpilledData } from "./spill";
@@ -177,6 +178,56 @@ async function sha256Hex(input: string): Promise<string> {
   const data = new TextEncoder().encode(input);
   const buf = await crypto.subtle.digest("SHA-256", data);
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function clientIp(c: { req: { header: (name: string) => string | undefined } }): string {
+  return c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+}
+
+function setSessionCookie(c: Parameters<typeof setCookie>[0], token: string): void {
+  setCookie(c, COOKIE, token, {
+    httpOnly: true,
+    sameSite: "Lax",
+    // Cookies are only marked Secure over HTTPS so `wrangler dev` on http://localhost still works.
+    secure: new URL((c as unknown as { req: { url: string } }).req.url).protocol === "https:",
+    path: "/",
+    maxAge: SESSION_TTL_MS / 1000,
+  });
+}
+
+/**
+ * Same-origin enforcement for state-changing requests. A missing Origin/Referer is a
+ * failure rather than a pass, otherwise stripping the header bypasses the check.
+ * Combined with the SameSite=Lax session cookie this is the CSRF defense.
+ */
+function sameOriginCheck(c: { req: { header: (name: string) => string | undefined; url: string } }): "ok" | "missing" | "cross" | "malformed" {
+  const requestOrigin = c.req.header("origin") || c.req.header("referer");
+  if (!requestOrigin) return "missing";
+  try {
+    return new URL(requestOrigin).origin === new URL(c.req.url).origin ? "ok" : "cross";
+  } catch {
+    return "malformed";
+  }
+}
+
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_FAILURES = 8;
+
+async function tooManyLoginAttempts(db: D1Database, ip: string): Promise<boolean> {
+  const row = await db
+    .prepare("SELECT COUNT(*) AS n FROM login_attempts WHERE ip = ? AND created_at > ?")
+    .bind(ip, Date.now() - LOGIN_WINDOW_MS)
+    .first<{ n: number }>();
+  return (row?.n ?? 0) >= LOGIN_MAX_FAILURES;
+}
+
+async function recordLoginFailure(db: D1Database, ip: string): Promise<void> {
+  await db.prepare("INSERT INTO login_attempts (ip, created_at) VALUES (?, ?)").bind(ip, Date.now()).run();
+  await db.prepare("DELETE FROM login_attempts WHERE created_at < ?").bind(Date.now() - LOGIN_WINDOW_MS).run();
+}
+
+async function clearLoginFailures(db: D1Database, ip: string): Promise<void> {
+  await db.prepare("DELETE FROM login_attempts WHERE ip = ?").bind(ip).run();
 }
 
 function newResumeToken(): string {
@@ -620,25 +671,36 @@ app.get("/f/:id", async (c) => {
 app.get("/admin/login", (c) => c.html(<LoginPage />));
 
 app.post("/admin/login", async (c) => {
+  if (sameOriginCheck(c) !== "ok") return c.text("Cross-origin sign-in rejected.", 403);
+  const ip = clientIp(c);
+  if (await tooManyLoginAttempts(c.env.DB, ip)) {
+    return c.html(<LoginPage error="Too many sign-in attempts. Wait 15 minutes and try again." />, 429);
+  }
   const body = await c.req.parseBody();
   const password = String(body.password ?? "");
   const email = String(body.email ?? "").trim().toLowerCase();
   let sessionToken: string | null = null;
   if (email) {
     const user = await getUserByEmail(c.env.DB, email);
-    if (user && (await sha256Hex(password)) === user.password_hash) sessionToken = await makeUserSessionToken(user.id, "ws_default", c.env.SESSION_SECRET);
+    if (user) {
+      const { ok, needsUpgrade } = await verifyPassword(password, user.password_hash, sha256Hex);
+      if (ok) {
+        // Silently migrate legacy unsalted SHA-256 digests to PBKDF2 on first successful login.
+        if (needsUpgrade) await updateUserPassword(c.env.DB, user.id, await hashPassword(password));
+        sessionToken = await makeUserSessionToken(user.id, "ws_default", c.env.SESSION_SECRET);
+      }
+    }
   }
-  if (!sessionToken && c.env.ADMIN_PASSWORD && password === c.env.ADMIN_PASSWORD) {
-    const owner = await ensureBootstrapOwner(c.env.DB, email || "owner@formrelay.local", await sha256Hex(password), email || "Workspace owner", c.env.WORKSPACE_NAME || "My workspace");
+  if (!sessionToken && c.env.ADMIN_PASSWORD && timingSafeEqual(password, c.env.ADMIN_PASSWORD)) {
+    const owner = await ensureBootstrapOwner(c.env.DB, email || "owner@formrelay.local", await hashPassword(password), email || "Workspace owner", c.env.WORKSPACE_NAME || "My workspace");
     sessionToken = await makeUserSessionToken(owner.id, "ws_default", c.env.SESSION_SECRET);
   }
-  if (!sessionToken) return c.html(<LoginPage error="Wrong email or password. Try again." />);
-  setCookie(c, COOKIE, sessionToken, {
-    httpOnly: true,
-    sameSite: "Lax",
-    path: "/",
-    maxAge: SESSION_TTL_MS / 1000,
-  });
+  if (!sessionToken) {
+    await recordLoginFailure(c.env.DB, ip);
+    return c.html(<LoginPage error="Wrong email or password. Try again." />, 401);
+  }
+  await clearLoginFailures(c.env.DB, ip);
+  setSessionCookie(c, sessionToken);
   return c.redirect("/admin");
 });
 
@@ -654,14 +716,15 @@ app.get("/invite/:token", async (c) => {
 });
 
 app.post("/invite/:token", async (c) => {
+  if (sameOriginCheck(c) !== "ok") return c.text("Cross-origin invitation acceptance rejected.", 403);
   const invite = await getInvitationByHash(c.env.DB, await sha256Hex(c.req.param("token")));
   if (!invite) return c.text("This invitation is invalid or expired.", 410);
   const body = await c.req.parseBody();
   const name = String(body.name ?? "").trim();
   const password = String(body.password ?? "");
   if (name.length < 2 || password.length < 10) return c.text("Name and a password of at least 10 characters are required.", 400);
-  const user = await acceptInvitation(c.env.DB, invite, name, await sha256Hex(password));
-  setCookie(c, COOKIE, await makeUserSessionToken(user.id, invite.workspace_id, c.env.SESSION_SECRET), { httpOnly: true, sameSite: "Lax", path: "/", maxAge: SESSION_TTL_MS / 1000 });
+  const user = await acceptInvitation(c.env.DB, invite, name, await hashPassword(password));
+  setSessionCookie(c, await makeUserSessionToken(user.id, invite.workspace_id, c.env.SESSION_SECRET));
   return c.redirect("/admin?msg=Invitation+accepted");
 });
 
@@ -682,8 +745,9 @@ app.use("/admin/*", async (c, next) => {
   if (!authorized) authorized = await verifySessionToken(token, c.env.SESSION_SECRET);
   if (!authorized) return c.redirect("/admin/login");
   if (["POST", "PUT", "PATCH", "DELETE"].includes(c.req.method)) {
-    const requestOrigin = c.req.header("origin") || c.req.header("referer");
-    if (requestOrigin) { try { if (new URL(requestOrigin).origin !== new URL(c.req.url).origin) return c.text("Cross-origin admin mutation rejected.", 403); } catch { return c.text("Malformed request origin.", 400); } }
+    const verdict = sameOriginCheck(c);
+    if (verdict === "malformed") return c.text("Malformed request origin.", 400);
+    if (verdict !== "ok") return c.text("Cross-origin admin mutation rejected.", 403);
   }
   if (membership?.role === "viewer" && c.req.method === "POST") return c.text("Viewer memberships are read-only.", 403);
   if (membership && path.startsWith("/admin/settings/members") && membership.role !== "owner") return c.text("Only workspace owners can manage members.", 403);

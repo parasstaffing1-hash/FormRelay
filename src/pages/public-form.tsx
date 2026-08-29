@@ -48,13 +48,53 @@ function isChecked(values: Record<string, string>, id: string, option: string): 
   const raw = values[id] ?? "";
   return raw.split(",").map((s) => s.trim()).includes(option);
 }
+/**
+ * Theme values are also validated when saved, but they are re-validated here so a row
+ * written by an older build (or edited directly in D1) cannot inject CSS into the
+ * inline `style` attribute. Anything unrecognised is dropped rather than escaped.
+ */
+function safeColor(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const raw = value.trim();
+  if (/^#[0-9a-f]{3,8}$/i.test(raw)) return raw;
+  if (/^(rgb|hsl)a?\(\s*[0-9a-z.,%\s/]+\)$/i.test(raw)) return raw;
+  if (/^[a-z]{3,24}$/i.test(raw)) return raw;
+  return undefined;
+}
+
+function safeFont(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const raw = value.trim();
+  if (!/^[a-z0-9 ,'"-]{1,60}$/i.test(raw)) return undefined;
+  // Reject unbalanced quotes, which would otherwise swallow the declarations that follow.
+  const quotes = (raw.match(/["']/g) ?? []).length;
+  return quotes % 2 === 0 ? raw : undefined;
+}
+
+/** Only http(s) URLs, and only ones with no CSS-breaking characters. */
+function safeCssUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const raw = value.trim();
+  if (/["'()\;\s]/.test(raw)) return undefined;
+  try {
+    const parsed = new URL(raw);
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? raw : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function themeStyle(theme: Theme): string {
   const parts: string[] = [];
-  if (theme.font) parts.push(`--form-font:${theme.font}`);
-  if (theme.background) parts.push(`--form-bg:${theme.background}`);
-  if (theme.text) parts.push(`--form-text:${theme.text}`);
-  if (theme.button) parts.push(`--form-button:${theme.button}`);
-  if (theme.radius != null) parts.push(`--form-radius:${Math.max(0, Math.min(32, theme.radius))}px`);
+  const font = safeFont(theme.font);
+  const background = safeColor(theme.background);
+  const text = safeColor(theme.text);
+  const button = safeColor(theme.button);
+  if (font) parts.push(`--form-font:${font}`);
+  if (background) parts.push(`--form-bg:${background}`);
+  if (text) parts.push(`--form-text:${text}`);
+  if (button) parts.push(`--form-button:${button}`);
+  if (theme.radius != null && Number.isFinite(theme.radius)) parts.push(`--form-radius:${Math.max(0, Math.min(32, theme.radius))}px`);
   return parts.join(";");
 }
 function starIcon(filled: boolean) {
@@ -119,5 +159,5 @@ export const PublicFormPage: FC<Props> = ({ form, schema, origin, errors = {}, v
   const theme = parseTheme(form.theme_json);
   const style = themeStyle(theme);
   const submitText = schema.settings.submitText?.trim() ? pipeText(schema.settings.submitText, context) : "Submit";
-  return <html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>{form.name} · FormRelay</title><style dangerouslySetInnerHTML={{ __html: CSS + PUBLIC_CSS }} /></head><body><div class="public-wrap" style={style}><div class="public-card">{theme.cover ? <div class="public-cover" style={`background-image:url(${theme.cover})`} /> : null}<div class="public-head">{theme.logo ? <img class="public-logo" src={theme.logo} alt="" /> : null}<h1>{form.name}</h1>{v2 && v2.settings.progressStyle !== "none" && pages.length > 1 ? <><p data-progress-label>Page 1 of {pages.length}</p><div class="progress-track"><div class="progress-fill" data-progress-fill style="width:100%" /></div></> : null}{schema.blocks.length === 0 ? <p>This form has no fields yet.</p> : null}</div><div class="public-body"><form method="post" action={endpoint} enctype="multipart/form-data" data-smart-form={v2 ? "true" : undefined}><input type="text" name="_gotcha" style="display:none" tabindex={-1} autocomplete="off" />{pageBlocks.map(({ page, blocks }) => <section class="page-section" data-page-id={page.id}><h2 class="small t2" style="margin:0 0 12px">{page.title}</h2>{page.description ? <p class="hint" style="margin-top:-8px">{pipeText(page.description, context)}</p> : null}{blocks.map((block) => <BlockField block={block} errors={errors} values={values} context={context} />)}</section>)}<div class="page-actions">{v2 && pages.length > 1 ? <button class="btn btn-secondary" type="button" data-prev hidden>Previous</button> : null}{v2 && pages.length > 1 ? <button class="btn btn-secondary" type="button" data-next hidden>Next</button> : null}<button class="btn btn-primary" type="submit" data-submit style="width:100%;height:38px">{submitText}</button></div>{v2 ? <div class="resume-note" data-resume-note>Your progress is saved securely as you type.</div> : null}</form></div><div class="public-foot">FormRelay · Powered by {origin}</div></div></div>{v2 ? <script dangerouslySetInnerHTML={{ __html: runtimeScript(v2, endpoint) }} /> : null}</body></html>;
+  return <html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>{form.name} · FormRelay</title><style dangerouslySetInnerHTML={{ __html: CSS + PUBLIC_CSS }} /></head><body><div class="public-wrap" style={style}><div class="public-card">{safeCssUrl(theme.cover) ? <div class="public-cover" style={`background-image:url(${safeCssUrl(theme.cover)})`} /> : null}<div class="public-head">{safeCssUrl(theme.logo) ? <img class="public-logo" src={safeCssUrl(theme.logo)} alt="" /> : null}<h1>{form.name}</h1>{v2 && v2.settings.progressStyle !== "none" && pages.length > 1 ? <><p data-progress-label>Page 1 of {pages.length}</p><div class="progress-track"><div class="progress-fill" data-progress-fill style="width:100%" /></div></> : null}{schema.blocks.length === 0 ? <p>This form has no fields yet.</p> : null}</div><div class="public-body"><form method="post" action={endpoint} enctype="multipart/form-data" data-smart-form={v2 ? "true" : undefined}><input type="text" name="_gotcha" style="display:none" tabindex={-1} autocomplete="off" />{pageBlocks.map(({ page, blocks }) => <section class="page-section" data-page-id={page.id}><h2 class="small t2" style="margin:0 0 12px">{page.title}</h2>{page.description ? <p class="hint" style="margin-top:-8px">{pipeText(page.description, context)}</p> : null}{blocks.map((block) => <BlockField block={block} errors={errors} values={values} context={context} />)}</section>)}<div class="page-actions">{v2 && pages.length > 1 ? <button class="btn btn-secondary" type="button" data-prev hidden>Previous</button> : null}{v2 && pages.length > 1 ? <button class="btn btn-secondary" type="button" data-next hidden>Next</button> : null}<button class="btn btn-primary" type="submit" data-submit style="width:100%;height:38px">{submitText}</button></div>{v2 ? <div class="resume-note" data-resume-note>Your progress is saved securely as you type.</div> : null}</form></div><div class="public-foot">FormRelay · Powered by {origin}</div></div></div>{v2 ? <script dangerouslySetInnerHTML={{ __html: runtimeScript(v2, endpoint) }} /> : null}</body></html>;
 };

@@ -1,4 +1,5 @@
 import { FC, PropsWithChildren, Child } from "hono/jsx";
+import { escapeScriptJson } from "../util";
 import { CSS } from "./styles";
 import { CLIENT_JS } from "./client";
 import {
@@ -64,7 +65,8 @@ export const AppShell: FC<
   ];
 
   const initial = "FR";
-  const commandJson = JSON.stringify(
+  // `<` is escaped so a command label can never terminate the surrounding <script> tag.
+  const commandJson = escapeScriptJson(JSON.stringify(
     commands.length
       ? commands
       : [
@@ -76,7 +78,7 @@ export const AppShell: FC<
           { label: "Go to Settings", href: "/admin/settings", icon: NAV_ICON_PATHS.settings },
           { label: "Open documentation", href: "/", icon: NAV_ICON_PATHS.book, keywords: "docs help guide" },
         ]
-  );
+  ));
 
   return (
     <html lang="en">

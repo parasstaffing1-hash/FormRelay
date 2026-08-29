@@ -24,9 +24,7 @@ npm install
 npm run db:create
 #    -> paste it into wrangler.toml [[d1_databases]] database_id
 
-# 2. Create tables — locally AND remotely.
-#    Re-run schema.sql if upgrading: webhooks/webhook_deliveries tables
-#    and referer/archived columns were added recently. (Idempotent.)
+# 2. Create tables — locally AND remotely. (schema.sql is idempotent.)
 npm run db:init
 npm run db:init:remote
 
@@ -49,6 +47,23 @@ Secrets (`npx wrangler secret put <NAME>` after `npx wrangler login`):
 npm run dev      # http://localhost:8787
 npm run deploy   # wrangler deploy
 ```
+
+### Upgrading an existing install
+
+`schema.sql` always describes the current shape, so a fresh install needs nothing else.
+Existing databases apply the numbered migrations in `migrations/` once each, in order:
+
+```bash
+npx wrangler d1 execute formrelay --remote --file=./migrations/0002-smart-forms-workflows.sql
+npx wrangler d1 execute formrelay --remote --file=./migrations/0003-security-hardening.sql
+```
+
+`0002` is a one-time upgrade — SQLite `ALTER TABLE ... ADD COLUMN` is not idempotent, so
+re-running it errors on columns that already exist. `0003` is safe to re-run.
+
+Passwords are stored as salted PBKDF2. Databases written by an earlier build hold unsalted
+SHA-256 digests; those still authenticate and are re-hashed to PBKDF2 automatically the next
+time each user signs in, so no manual password reset is needed.
 
 ## Usage
 

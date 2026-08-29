@@ -81,3 +81,66 @@ export function fmtDateTime(ms: number): string {
 export function submissionRef(id: number): string {
   return `FRA-${String(id).padStart(5, "0")}`;
 }
+
+/* ---------- password hashing ---------- */
+
+// PBKDF2-SHA256. Iterations are deliberately modest so a login stays inside the
+// Cloudflare Workers free-tier CPU budget; raise PASSWORD_ITERATIONS on paid plans.
+const PASSWORD_ITERATIONS = 50_000;
+
+function b64(bytes: Uint8Array): string {
+  return btoa(String.fromCharCode(...bytes));
+}
+
+function unb64(value: string): Uint8Array {
+  return Uint8Array.from(atob(value), (ch) => ch.charCodeAt(0));
+}
+
+async function pbkdf2(password: string, salt: Uint8Array, iterations: number): Promise<Uint8Array> {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt: salt as unknown as BufferSource, iterations, hash: "SHA-256" }, key, 256);
+  return new Uint8Array(bits);
+}
+
+/** Returns a self-describing `pbkdf2$<iterations>$<salt>$<hash>` string. */
+export async function hashPassword(password: string): Promise<string> {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const hash = await pbkdf2(password, salt, PASSWORD_ITERATIONS);
+  return `pbkdf2$${PASSWORD_ITERATIONS}$${b64(salt)}$${b64(hash)}`;
+}
+
+export function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+/**
+ * Verifies against a PBKDF2 hash, or against a legacy unsalted SHA-256 hex digest.
+ * `needsUpgrade` is true for legacy hashes so callers can transparently re-hash on login.
+ */
+export async function verifyPassword(
+  password: string,
+  stored: string,
+  legacySha256: (input: string) => Promise<string>
+): Promise<{ ok: boolean; needsUpgrade: boolean }> {
+  if (stored.startsWith("pbkdf2$")) {
+    const [, rawIterations, rawSalt, rawHash] = stored.split("$");
+    const iterations = Number(rawIterations);
+    if (!Number.isInteger(iterations) || iterations < 1 || !rawSalt || !rawHash) return { ok: false, needsUpgrade: false };
+    try {
+      const hash = await pbkdf2(password, unb64(rawSalt), iterations);
+      return { ok: timingSafeEqual(b64(hash), rawHash), needsUpgrade: false };
+    } catch {
+      return { ok: false, needsUpgrade: false };
+    }
+  }
+  const ok = timingSafeEqual(await legacySha256(password), stored);
+  return { ok, needsUpgrade: ok };
+}
+
+/** Escapes `<` so a JSON payload can be safely inlined inside a <script> element. */
+export function escapeScriptJson(json: string): string {
+  return json.replace(/</g, "\\u003c");
+}

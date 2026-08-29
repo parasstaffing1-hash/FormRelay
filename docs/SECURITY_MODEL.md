@@ -1,7 +1,10 @@
 # Security Model
 
 ## Current controls
-- **Auth**: single admin password (env `ADMIN_PASSWORD`) → HMAC-SHA256-signed session cookie `fr_session`, 7-day expiry, `HttpOnly`, `SameSite=Lax`. Session token = `expiry.signature`.
+- **Auth**: single admin password (env `ADMIN_PASSWORD`) → HMAC-SHA256-signed session cookie `fr_session`, 7-day expiry, `HttpOnly`, `SameSite=Lax`, and `Secure` whenever the request arrives over HTTPS. Session token = `expiry.signature`.
+- **Password storage**: user passwords are hashed with salted PBKDF2-SHA256 (`pbkdf2$<iterations>$<salt>$<hash>`, 50k iterations, per-password 16-byte salt). Legacy unsalted SHA-256 digests are still accepted and are transparently re-hashed to PBKDF2 on the next successful sign-in. `ADMIN_PASSWORD` is compared in constant time.
+- **Sign-in brute force**: failed attempts are recorded per IP in `login_attempts`; 8 failures within 15 minutes lock that IP out for the remainder of the window. Successful sign-in clears the counter.
+- **CSRF**: every state-changing request under `/admin/*`, plus the sign-in and invitation-acceptance POSTs, must carry a same-origin `Origin` or `Referer`. A *missing* header is rejected, not allowed — stripping the header is not a bypass. Combined with `SameSite=Lax` this is the CSRF defense.
 - **Spam**: honeypot fields, per-IP rate limit (10/min), optional Cloudflare Turnstile (server-side verify via `challenges.cloudflare.com`).
 - **Webhooks**: per-hook random `whsec_…` secret; every payload carries `X-FormRelay-Signature: sha256=<HMAC-SHA256 of raw body>`; delivered over HTTPS.
 - **Files**: randomized R2 keys (`fr/{form}/{uuid}/{name}`), filename sanitized, MIME/size recorded in DB (no trust of browser MIME alone), served as `attachment`.
@@ -13,10 +16,12 @@
 ## Threat review checklist
 | Threat | Posture | Action |
 |---|---|---|
-| XSS in stored answers | Escaped on render (JSX) | add CSP header; audit remaining `dangerouslySetInnerHTML` |
+| XSS in stored answers | Escaped on render (JSX); CSP set on every response; JSON inlined into `<script>` has `<` escaped | tighten CSP off `'unsafe-inline'` via nonces |
+| CSS injection via form themes | Theme colors/fonts/URLs re-validated at render, not just on save; unrecognised values dropped | none |
+| Credential stuffing / brute force | Per-IP sign-in lockout (8 failures / 15 min) backed by D1, so it holds across isolates | none |
 | SQL injection | Parameterized everywhere | none |
 | IDOR / ID enumeration | Unguessable form/webhook/api ids; doc the residual risk opaquely | add per-owner scope when multi-tenant lands |
-| CSRF (cookie sessions) | `SameSite=Lax` mitigates top-level/submit CSRF; state-changing POSTs all POST | add CSRF token on auth'd form posts |
+| CSRF (cookie sessions) | `SameSite=Lax` + mandatory same-origin `Origin`/`Referer` on all state-changing routes (missing header rejected) | per-request nonce tokens if a future flow needs cross-origin POSTs |
 | Upload abuse | Size/type recorded, randomized keys | enforce type allowlist + size cap at ingest |
 | Path traversal | R2 keys server-generated; `sanitizeFilename` strips path separators | none |
 | SSRF (webhooks) | User-supplied URLs by design; Worker egress to public net only | optional allowlist of internal IPs (Workers has no VPC) |

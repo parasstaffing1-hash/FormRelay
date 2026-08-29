@@ -76,5 +76,8 @@ Legend — **DONE** = UI works + backend works + data persists + errors handled 
 | AI features (prompt→form, suggestions) | NOT IMPLEMENTED | — | Fillout | provider-agnostic AI | P2 | — | — |
 | Offline collection (PWA) | NOT IMPLEMENTED | — | — | — | P2 | — | — |
 | Rate limit (API keys) | PARTIAL | 3 | — | cross-isolate (DO/KV) | P2 | Durable Object | — |
-| CSRF protections | PARTIAL | 4 | — | nonce tokens on every authenticated form | P0 | — | typecheck ✅ |
-| XSS hardening | PARTIAL | 4 | — | JSX auto-escape ✅; review raw `dangerouslySetInnerHTML` | P0 | — | manual |
+| CSRF protections | DONE | 4 | — | nonce tokens only if a cross-origin POST flow is added | P0 | — | smoke ✅ |
+| XSS hardening | DONE | 4 | — | drop CSP `'unsafe-inline'` via nonces | P0 | — | smoke ✅ |
+| Password hashing (salted PBKDF2) | DONE | 5 | — | — | P0 | — | unit ✅ |
+| Sign-in brute-force lockout | DONE | 4 | — | — | P0 | — | smoke ✅ |
+| Theme CSS-injection sanitization | DONE | 5 | — | — | P0 | — | smoke ✅ |
