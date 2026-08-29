@@ -739,3 +739,43 @@ export async function eraseSubmissionByReceipt(db: D1Database, tokenHash: string
 export async function setFormPrefillSignedOnly(db: D1Database, formId: string, on: boolean): Promise<void> {
   await db.prepare("UPDATE forms SET prefill_signed_only = ? WHERE id = ?").bind(on ? 1 : 0, formId).run();
 }
+
+/* ---------- trust controls ---------- */
+
+export async function recordResponseView(db: D1Database, submissionId: number, actor: string, action = "view"): Promise<void> {
+  try {
+    await db.prepare("INSERT INTO response_views (submission_id, actor, action, created_at) VALUES (?, ?, ?, ?)")
+      .bind(submissionId, actor.slice(0, 200), action, Date.now()).run();
+  } catch {
+    // Auditing must never block the read it is recording.
+  }
+}
+
+export async function listResponseViews(db: D1Database, submissionId: number, limit = 25): Promise<{ id: number; submission_id: number; actor: string; action: string; created_at: number }[]> {
+  const { results } = await db.prepare("SELECT * FROM response_views WHERE submission_id = ? ORDER BY created_at DESC LIMIT ?").bind(submissionId, limit).all<any>();
+  return results ?? [];
+}
+
+export async function listRecentResponseViews(db: D1Database, limit = 100): Promise<{ id: number; submission_id: number; actor: string; action: string; created_at: number }[]> {
+  const { results } = await db.prepare("SELECT * FROM response_views ORDER BY created_at DESC LIMIT ?").bind(limit).all<any>();
+  return results ?? [];
+}
+
+export async function respondentKeyExists(db: D1Database, formId: string, key: string): Promise<boolean> {
+  const row = await db.prepare("SELECT 1 AS n FROM submissions WHERE form_id = ? AND respondent_key = ? LIMIT 1").bind(formId, key).first<{ n: number }>();
+  return !!row;
+}
+
+export async function annotateSubmission(db: D1Database, id: number, qualityJson: string, consentJson: string, respondentKey: string | null): Promise<void> {
+  await db.prepare("UPDATE submissions SET quality_json = ?, consent_json = ?, respondent_key = COALESCE(?, respondent_key) WHERE id = ?")
+    .bind(qualityJson, consentJson, respondentKey, id).run();
+}
+
+export async function updateFormTrust(
+  db: D1Database,
+  formId: string,
+  patch: { pow_bits: number; unique_mode: string; unique_field: string; consent_text: string; field_acl_json: string }
+): Promise<void> {
+  await db.prepare("UPDATE forms SET pow_bits = ?, unique_mode = ?, unique_field = ?, consent_text = ?, field_acl_json = ? WHERE id = ?")
+    .bind(patch.pow_bits, patch.unique_mode, patch.unique_field, patch.consent_text, patch.field_acl_json, formId).run();
+}

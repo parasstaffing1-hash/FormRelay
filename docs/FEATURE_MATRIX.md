@@ -76,6 +76,12 @@ Legend — **DONE** = UI works + backend works + data persists + errors handled 
 | AI features (prompt→form, suggestions) | NOT IMPLEMENTED | — | Fillout | provider-agnostic AI | P2 | — | — |
 | Offline collection (PWA) | NOT IMPLEMENTED | — | — | — | P2 | — | — |
 | Rate limit (API keys) | PARTIAL | 3 | — | cross-isolate (DO/KV) | P2 | Durable Object | — |
+| **Proof-of-work spam gate** (no CAPTCHA, no third party) | DONE | 4 | *none* | worker-thread solver for big difficulties | P1 | — | unit + smoke |
+| **Anonymous-but-unique** (blinded identity) | DONE | 4 | *none* | — | P1 | schema | unit + smoke |
+| **Consent receipts** (versioned wording) | DONE | 4 | *none* | show receipt in the portal | P1 | schema | unit + smoke |
+| **Response quality scoring** | DONE | 3 | Qualtrics | per-form thresholds, inbox filter | P2 | schema | unit + smoke |
+| **Field-level access control** | DONE | 4 | *none* | apply to CSV/API export paths too | P1 | memberships | unit |
+| **Response-level audit trail** | DONE | 3 | *none* | workspace-wide view log page | P2 | schema | smoke |
 | **Tamper-evident response log** (hash chain + anchors) | DONE | 4 | *none* | expose a public verification endpoint | P1 | schema | unit + smoke |
 | **Respondent receipt portal** (view/export/erase, no account) | DONE | 4 | *none* | per-form toggle, receipt in auto-reply email | P1 | schema | smoke |
 | **Signed prefill links** | DONE | 4 | *none* | expiry on signed links | P1 | — | unit + smoke |

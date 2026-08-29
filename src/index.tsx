@@ -77,6 +77,12 @@ import {
   listAnchors,
   recordAnchor,
   setFormPrefillSignedOnly,
+  annotateSubmission,
+  respondentKeyExists,
+  recordResponseView,
+  listResponseViews,
+  listRecentResponseViews,
+  updateFormTrust,
 } from "./db";
 import apiApp from "./api";
 import { spillIfLarge, resolveSpilledData } from "./spill";
@@ -86,6 +92,8 @@ import { executeWorkflow } from "./workflow-engine";
 import { checkFormHealth } from "./health";
 import { verifyChain, verifyPrefill, buildPrefillUrl, PREFILL_SIG_PARAM } from "./integrity";
 import { diffSchemas, summarizeDiff } from "./diff";
+import { verifyPow, issuePowChallenge, blindIdentity, buildConsentReceipt, scoreQuality, issueStartToken, elapsedFromStartToken, parseFieldAcl, redactForRole } from "./trust";
+import { POW_CLIENT_JS } from "./pow-client";
 import { PublicFormPage, FORM_RUNTIME_JS } from "./pages/public-form";
 import { BuilderPage, BUILDER_JS } from "./pages/builder";
 import { audit } from "./audit";
@@ -250,6 +258,21 @@ function sameOriginCheck(c: { req: { header: (name: string) => string | undefine
   }
 }
 
+/**
+ * Who is making this request, for audit records and field-level access control.
+ * Falls back to the bootstrap owner when the legacy password session is in use.
+ */
+async function currentActor(c: { req: { header: (name: string) => string | undefined; url: string }; env: Bindings }): Promise<{ id: string; label: string; role: string }> {
+  const token = c.req.header("cookie")?.match(/(?:^|;\s*)fr_session=([^;]+)/)?.[1];
+  const decoded = token ? decodeURIComponent(token) : "";
+  const parts = decoded.split(".");
+  if (parts.length === 4 && parts[0] && parts[1]) {
+    const membership = await getMembership(c.env.DB, parts[0], parts[1]);
+    if (membership) return { id: parts[0], label: parts[0], role: membership.role };
+  }
+  return { id: "bootstrap", label: "bootstrap admin", role: "owner" };
+}
+
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 8;
 
@@ -336,6 +359,7 @@ app.get("/assets/app.js", () => new Response(CLIENT_JS_WITH_GUARDS + PALETTE_WIR
 app.get("/assets/builder.js", () => new Response(BUILDER_JS, { headers: JS_HEADERS }));
 app.get("/assets/form-runtime.js", () => new Response(FORM_RUNTIME_JS, { headers: JS_HEADERS }));
 app.get("/assets/guards.js", () => new Response(GUARDS_JS, { headers: JS_HEADERS }));
+app.get("/assets/pow.js", () => new Response(POW_CLIENT_JS, { headers: JS_HEADERS }));
 
 /* ---------- public submit endpoint (preserved) ---------- */
 
@@ -572,6 +596,40 @@ app.post("/f/:id", async (c) => {
         toStoreSchema = { _spilled: spilled, _labels: labels, _v: schema.version };
       }
     }
+    // --- trust gates, before anything is persisted ---
+    const trustSecret = c.env.PREFILL_SECRET || c.env.SESSION_SECRET;
+
+    if ((form.pow_bits ?? 0) > 0) {
+      const powVerdict = await verifyPow(
+        formId,
+        String(rawPayload._pow_challenge ?? ""),
+        String(rawPayload._pow_nonce ?? ""),
+        form.pow_bits ?? 0,
+        trustSecret
+      );
+      if (!powVerdict.ok) return c.text(`Spam check failed: ${powVerdict.reason}.`, 400);
+    }
+
+    // One response per person, without storing who they are.
+    let respondentKey: string | null = null;
+    if (form.unique_mode === "blind" && form.unique_field) {
+      const identifier = String(rawPayload[form.unique_field] ?? "").trim();
+      if (!identifier) return c.text("This form requires an identifier to check you have not already responded.", 400);
+      respondentKey = await blindIdentity(formId, identifier, trustSecret);
+      if (await respondentKeyExists(c.env.DB, formId, respondentKey)) {
+        return c.text("A response has already been recorded for this identifier.", 409);
+      }
+    }
+
+    const consent = form.consent_text ? await buildConsentReceipt(form.consent_text) : null;
+    const elapsedMs = await elapsedFromStartToken(formId, String(rawPayload._started ?? ""), trustSecret);
+    const quality = scoreQuality({
+      values: data,
+      choiceFields: schema.blocks.filter((block) => ["select", "radio", "checkbox", "rating"].includes(block.type)).map((block) => block.id),
+      textFields: schema.blocks.filter((block) => ["short_text", "long_text"].includes(block.type)).map((block) => block.id),
+      elapsedMs,
+    });
+
     const resumeToken = typeof rawPayload._resume === "string" ? rawPayload._resume : "";
     // Every non-spam response gets a receipt token so the respondent can later view,
     // export, or erase their own submission without holding an account.
@@ -588,6 +646,9 @@ app.post("/f/:id", async (c) => {
       }
     } else {
       submissionId = await insertSubmission(c.env.DB, formId, toStoreSchema, ip, userAgent, referer, verdict.spam, receiptHash);
+    }
+    if (submissionId !== null) {
+      await annotateSubmission(c.env.DB, submissionId, JSON.stringify(quality), consent ? JSON.stringify(consent) : "", respondentKey);
     }
     if (!verdict.spam && form.one_per_respondent === 1) setCookie(c, `fr_responded_${formId}`, "1", { httpOnly: true, sameSite: "Lax", path: `/f/${formId}`, maxAge: 31536000 });
     if (c.env.FILES && uploads.length > 0 && !verdict.spam) {
@@ -736,7 +797,14 @@ app.get("/f/:id", async (c) => {
       recordFormEvent(c.env.DB, form.id, "view", c.req.header("referer") || "", trackingMetadata(c.req.url)),
     ]));
   const origin = originOf(c.req.url);
-  return c.html(<PublicFormPage form={form} schema={schema} origin={origin} values={values} />);
+  const trustSecret = c.env.PREFILL_SECRET || c.env.SESSION_SECRET;
+  const powBits = form.pow_bits ?? 0;
+  const trust = {
+    startToken: await issueStartToken(form.id, trustSecret),
+    powChallenge: powBits > 0 ? await issuePowChallenge(form.id, trustSecret) : "",
+    powBits,
+  };
+  return c.html(<PublicFormPage form={form} schema={schema} origin={origin} values={values} trust={trust} />);
 });
 
 /* ---------- auth ---------- */
@@ -994,6 +1062,129 @@ app.get("/admin/forms/:id/versions", async (c) => {
   if (!form) return c.notFound();
   const versions = await listFormVersions(c.env.DB, form.id, 50);
   return c.html(<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Version history · {form.name}</title><style dangerouslySetInnerHTML={{ __html: CSS }} /></head><body style="font-family:system-ui;max-width:820px;margin:40px auto;padding:0 20px"><p><a href={`/admin/forms/${form.id}/build`}>← Back to builder</a></p><h1>Version history</h1><p class="muted">Saved schema snapshots for {form.name}. Restoring a version replaces the current draft and published copy.</p>{versions.length ? <div class="card card-b">{versions.map((version) => <div class="kv" style="align-items:center"><div><strong>Version {version.id}</strong><div class="muted small">{new Date(version.created_at).toISOString()} · {version.created_by}</div></div><form method="post" action={`/admin/forms/${form.id}/versions/${version.id}/restore`} data-confirm="Restore this version?"><button class="btn btn-secondary btn-sm" type="submit">Restore</button></form></div>)}</div> : <p>No snapshots yet. Saving the builder will create the first snapshot.</p>}<script src="/assets/guards.js" defer /></body></html>);
+});
+
+app.get("/admin/forms/:id/trust", async (c) => {
+  const form = await getForm(c.env.DB, c.req.param("id"));
+  if (!form) return c.notFound();
+  const schema = parseSchema(form.published_json) ?? parseSchema(form.schema_json);
+  const fields = (schema?.blocks ?? []).filter((block) => !["heading", "paragraph", "divider", "page"].includes(block.type));
+  const acl = parseFieldAcl(form.field_acl_json);
+  const roles = ["editor", "viewer"];
+
+  return c.html(
+    <AppShell
+      path={`/admin/forms/${form.id}/trust`}
+      crumbs={[{ label: "Forms", href: "/admin/forms" }, { label: form.name, href: `/admin/forms/${form.id}` }, { label: "Trust" }]}
+      toastMsg={msgFrom(c)}
+      commands={baseCommands(originOf(c.req.url))}
+      formCount={0}
+      submissionCount={0}
+    >
+      <PageHead title="Trust controls" sub="Spam gating without a third party, one-response-per-person without identity, recorded consent, and per-field access." />
+      <form method="post" action={`/admin/forms/${form.id}/trust`} style="max-width:660px">
+
+        <div class="card">
+          <div class="card-h">Proof-of-work gate</div>
+          <div class="card-b">
+            <div class="field">
+              <label for="pow_bits">Difficulty (leading zero bits)</label>
+              <select class="select" id="pow_bits" name="pow_bits">
+                {[0, 12, 16, 18, 20, 22].map((bits) => (
+                  <option value={String(bits)} selected={(form.pow_bits ?? 0) === bits}>
+                    {bits === 0 ? "Off" : `${bits} bits${bits >= 20 ? " (slow on phones)" : ""}`}
+                  </option>
+                ))}
+              </select>
+              <div class="hint">The browser must find a matching hash before the form submits. No CAPTCHA, no third-party script, nothing for the respondent to do. 16 bits is roughly a moment on a laptop and expensive in bulk.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card mt16">
+          <div class="card-h">One response per person</div>
+          <div class="card-b">
+            <div class="field">
+              <label for="unique_mode">Mode</label>
+              <select class="select" id="unique_mode" name="unique_mode">
+                <option value="off" selected={form.unique_mode !== "blind"}>Off</option>
+                <option value="blind" selected={form.unique_mode === "blind"}>Blind — unique, without storing who</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="unique_field">Identifier field</label>
+              <select class="select" id="unique_field" name="unique_field">
+                <option value="">Select a field</option>
+                {fields.map((block) => <option value={block.id} selected={form.unique_field === block.id}>{block.label || block.id}</option>)}
+              </select>
+              <div class="hint">The value is HMAC&rsquo;d and only the digest is stored, so duplicates are rejected while the database never learns the identifier. Suitable for anonymous staff surveys and ballots.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card mt16">
+          <div class="card-h">Consent receipt</div>
+          <div class="card-b">
+            <div class="field">
+              <label for="consent_text">Consent wording</label>
+              <textarea class="textarea" id="consent_text" name="consent_text" placeholder="Leave empty to disable">{form.consent_text ?? ""}</textarea>
+              <div class="hint">Stored with every response along with a version digest of this exact wording, so a later dispute is settled against the text as it stood that day.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card mt16">
+          <div class="card-h">Field access</div>
+          <div class="card-b">
+            <p class="small muted" style="margin-bottom:12px">Restrict who can see a field. Unrestricted fields are visible to everyone; owners always see everything.</p>
+            {fields.length === 0 ? <p class="small muted">Publish a visual schema to configure field access.</p> : fields.map((block) => (
+              <div class="kv">
+                <div class="k">{block.label || block.id}</div>
+                <div style="display:flex;gap:12px">
+                  {roles.map((role) => (
+                    <label class="checkbox-row" style="font-size:13px">
+                      <input type="checkbox" name={`acl_${block.id}`} value={role} checked={(acl[block.id] ?? []).includes(role)} />
+                      <span>{role}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ))}
+            <p class="hint" style="margin-top:10px">Leave both unchecked to keep a field visible to everyone.</p>
+          </div>
+        </div>
+
+        <div style="margin-top:16px"><Button type="submit">Save trust settings</Button></div>
+      </form>
+    </AppShell>
+  );
+});
+
+app.post("/admin/forms/:id/trust", async (c) => {
+  const id = c.req.param("id");
+  const form = await getForm(c.env.DB, id);
+  if (!form) return c.notFound();
+  const body = await c.req.parseBody({ all: true });
+
+  const schema = parseSchema(form.published_json) ?? parseSchema(form.schema_json);
+  const fields = (schema?.blocks ?? []).map((block) => block.id);
+  const acl: Record<string, string[]> = {};
+  for (const field of fields) {
+    const raw = body[`acl_${field}`];
+    const roles = Array.isArray(raw) ? raw.map(String) : typeof raw === "string" ? [raw] : [];
+    if (roles.length > 0) acl[field] = roles;
+  }
+
+  const bits = Number(body.pow_bits);
+  await updateFormTrust(c.env.DB, id, {
+    pow_bits: Number.isInteger(bits) && bits >= 0 && bits <= 24 ? bits : 0,
+    unique_mode: body.unique_mode === "blind" ? "blind" : "off",
+    unique_field: String(body.unique_field ?? "").slice(0, 80),
+    consent_text: String(body.consent_text ?? "").trim().slice(0, 4000),
+    field_acl_json: JSON.stringify(acl),
+  });
+  await audit(c.env.DB, "form.trust.updated", id, `pow=${bits} unique=${body.unique_mode}`);
+  return c.redirect(`/admin/forms/${id}/trust?msg=${encodeURIComponent("Trust settings saved")}`);
 });
 
 app.get("/admin/forms/:id/prefill", async (c) => {
@@ -1457,6 +1648,26 @@ app.get("/admin/submissions/:id", async (c) => {
     url.searchParams.get("back") === "form" && sub.form_id
       ? `/admin/forms/${sub.form_id}`
       : "/admin/submissions";
+
+  // Field-level access control: strip values this viewer is not entitled to see before
+  // the page is rendered, so a redacted field never reaches the browser at all.
+  const viewer = await currentActor(c);
+  const parentForm = sub.form_id ? await getForm(c.env.DB, sub.form_id) : null;
+  const acl = parseFieldAcl(parentForm?.field_acl_json);
+  if (Object.keys(acl).length > 0 && viewer.role !== "owner") {
+    try {
+      const parsed = JSON.parse(sub.data) as Record<string, unknown>;
+      const labels = parsed._labels;
+      const visible = redactForRole(parsed as Record<string, unknown>, acl, viewer.role);
+      if (labels !== undefined) visible["_labels"] = redactForRole(labels as Record<string, unknown>, acl, viewer.role);
+      sub = { ...sub, data: JSON.stringify(visible) };
+    } catch {}
+  }
+
+  // Record who read this response. Regulated intake needs to answer that question.
+  c.executionCtx.waitUntil(recordResponseView(c.env.DB, sub.id, viewer.label, "view"));
+
+  const views = await listResponseViews(c.env.DB, sub.id, 10);
   const stats = await getDashboardStats(c.env.DB);
   return c.html(
     <SubmissionDetailPage

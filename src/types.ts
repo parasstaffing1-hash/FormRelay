@@ -34,6 +34,11 @@ export type FormRow = {
   closed_message?: string | null;
   one_per_respondent?: number;
   prefill_signed_only?: number;
+  pow_bits?: number;
+  unique_mode?: string;
+  unique_field?: string;
+  consent_text?: string;
+  field_acl_json?: string;
 };
 
 export type SubmissionStatus = "in_progress" | "partial" | "completed" | "abandoned" | "spam" | "deleted";
@@ -59,6 +64,9 @@ export type SubmissionRow = {
   row_hash?: string;
   receipt_token_hash?: string | null;
   erased_at?: number | null;
+  quality_json?: string;
+  consent_json?: string;
+  respondent_key?: string | null;
 };
 
 export type WebhookRow = {

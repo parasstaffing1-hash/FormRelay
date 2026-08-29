@@ -80,7 +80,12 @@ CREATE TABLE IF NOT EXISTS forms (
   closed_message TEXT NOT NULL DEFAULT '',
   one_per_respondent INTEGER NOT NULL DEFAULT 0,
   workspace_id TEXT NOT NULL DEFAULT 'ws_default',
-  prefill_signed_only INTEGER NOT NULL DEFAULT 0
+  prefill_signed_only INTEGER NOT NULL DEFAULT 0,
+  pow_bits INTEGER NOT NULL DEFAULT 0,
+  unique_mode TEXT NOT NULL DEFAULT 'off',
+  unique_field TEXT NOT NULL DEFAULT '',
+  consent_text TEXT NOT NULL DEFAULT '',
+  field_acl_json TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_forms_slug ON forms (slug) WHERE slug IS NOT NULL AND slug != '';
@@ -127,8 +132,14 @@ CREATE TABLE IF NOT EXISTS submissions (
   prev_hash TEXT NOT NULL DEFAULT '',
   row_hash TEXT NOT NULL DEFAULT '',
   receipt_token_hash TEXT,
-  erased_at INTEGER
+  erased_at INTEGER,
+  quality_json TEXT NOT NULL DEFAULT '{}',
+  consent_json TEXT NOT NULL DEFAULT '',
+  respondent_key TEXT
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_submissions_respondent
+  ON submissions (form_id, respondent_key) WHERE respondent_key IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_submissions_receipt ON submissions (receipt_token_hash);
 
@@ -268,3 +279,15 @@ CREATE TABLE IF NOT EXISTS chain_anchors (
 );
 
 CREATE INDEX IF NOT EXISTS idx_chain_anchors_form ON chain_anchors (form_id, created_at DESC);
+
+
+CREATE TABLE IF NOT EXISTS response_views (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  submission_id INTEGER NOT NULL,
+  actor TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL DEFAULT 'view',
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_response_views_submission ON response_views (submission_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_response_views_created ON response_views (created_at DESC);
