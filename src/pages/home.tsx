@@ -134,13 +134,13 @@ const SparklineCard: FC<{ daily: { date: string; count: number }[] }> = ({ daily
         <span class="muted small">{daily[0]?.date.slice(5)} → {daily[daily.length - 1]?.date.slice(5)}</span>
       </div>
       <svg viewBox={`0 0 ${w} ${h}`} width={w} height={h} role="img" aria-label="14-day submission sparkline" style="display:block;max-width:100%">
-        <polygon points={areaPoints} fill="var(--accent-tint)" opacity="0.6" />
-        <polyline points={points} fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+        <polygon points={areaPoints} fill="var(--primary-subtle)" opacity="0.6" />
+        <polyline points={points} fill="none" stroke="var(--primary)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
         {daily.map((d, i) => {
           if (d.count === 0) return null;
           const x = (i / Math.max(1, daily.length - 1)) * (w - pad * 2) + pad;
           const y = h - pad - (d.count / max) * (h - pad * 2) - 2;
-          return <circle cx={x} cy={y} r="1.6" fill="var(--accent)" />;
+          return <circle cx={x} cy={y} r="1.6" fill="var(--primary)" />;
         })}
       </svg>
     </div>

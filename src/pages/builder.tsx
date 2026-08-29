@@ -46,7 +46,7 @@ export const BuilderPage: FC<Props> = ({ form, schema, origin: _origin, toastMsg
           <span class="flex gap8">
             <span class={`badge ${form.status === "published" ? "badge-success" : "badge-neutral"}`}><span class="dot"></span>{form.status === "published" ? "Published" : "Draft"}</span>
             <span class="muted small">ID {form.id}</span>
-            <a class="small" style="color:var(--accent)" href={`/admin/forms/${form.id}`}>Back to details</a>
+            <a class="small" style="color:var(--primary)" href={`/admin/forms/${form.id}`}>Back to details</a>
           </span>
         }
         actions={
@@ -80,7 +80,7 @@ export const BuilderPage: FC<Props> = ({ form, schema, origin: _origin, toastMsg
             <div class="card-b" style="padding:10px 12px">
               {groups.map((g) => (
                 <div style="margin-bottom:14px">
-                  <div style="font-size:11px;font-weight:600;color:var(--text-muted);letter-spacing:.04em;text-transform:uppercase;margin-bottom:6px">{g.group}</div>
+                  <div style="font-size:11px;font-weight:600;color:var(--subtle-foreground);letter-spacing:.04em;text-transform:uppercase;margin-bottom:6px">{g.group}</div>
                   {g.types.map((t) => (
                     <div class="flex between gap8" style="padding:4px 0;border-bottom:1px solid var(--border)">
                       <span style="font-size:13px">{BLOCK_DEFS[t].label}</span>
@@ -89,7 +89,7 @@ export const BuilderPage: FC<Props> = ({ form, schema, origin: _origin, toastMsg
                   ))}
                 </div>
               ))}
-              <p class="hint small" style="margin-top:8px;color:var(--text-muted)">Blocks are added to the draft. Click Save to persist.</p>
+              <p class="hint small" style="margin-top:8px;color:var(--subtle-foreground)">Blocks are added to the draft. Click Save to persist.</p>
             </div>
           </div>
 
@@ -162,7 +162,7 @@ export const BuilderPage: FC<Props> = ({ form, schema, origin: _origin, toastMsg
                     </div>
 
                     {editId === b.id ? (
-                      <div style="border-top:1px solid var(--border);padding:12px;background:var(--surface-secondary)">
+                      <div style="border-top:1px solid var(--border);padding:12px;background:var(--surface-subtle)">
                         <div class="field">
                           <label>Label</label>
                           <input class="input" data-blk={b.id} data-key="label" value={b.label} />
@@ -278,7 +278,7 @@ export const BUILDER_JS = String.raw`
       else { html += '<a class="btn btn-secondary btn-sm" href="'+esc(location.pathname)+'?edit='+esc(b.id)+'">Edit</a>'; }
       html += '</div></div>';
       if(isEdit){
-        html += '<div style="border-top:1px solid var(--border);padding:12px;background:var(--surface-secondary)">';
+        html += '<div style="border-top:1px solid var(--border);padding:12px;background:var(--surface-subtle)">';
         html += '<div class="field"><label>Label</label><input class="input" data-blk="'+esc(b.id)+'" data-key="label" value="'+esc(b.label)+'"></div>';
         html += '<div class="field"><label>Placeholder</label><input class="input" data-blk="'+esc(b.id)+'" data-key="placeholder" value="'+esc(b.placeholder||'')+'" placeholder="Optional"></div>';
         html += '<div class="field"><label>Help text</label><input class="input" data-blk="'+esc(b.id)+'" data-key="help" value="'+esc(b.help||'')+'" placeholder="Optional"></div>';

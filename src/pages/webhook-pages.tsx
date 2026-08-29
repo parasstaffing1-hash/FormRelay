@@ -136,7 +136,7 @@ export const WebhookDetailPage: FC<{
       </div>
 
       {testResult ? (
-        <div class={`callout mb16 ${testResult.ok ? "" : ""}`} style={testResult.ok ? "" : "background:var(--danger-bg);border-color:rgba(196,69,61,.25)"}>
+        <div class={`callout mb16 ${testResult.ok ? "" : ""}`} style={testResult.ok ? "" : "background:var(--danger-subtle);border-color:rgba(196,69,61,.25)"}>
           {testResult.ok ? <IconCheck size={15} /> : <IconAlert size={15} />}
           <div>
             Test delivery {testResult.ok ? "succeeded" : "failed"}{testResult.detail && !testResult.ok ? `: ${testResult.detail}` : ""}.

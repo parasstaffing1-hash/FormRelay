@@ -418,7 +418,7 @@ const AnalyticsView: FC<{ analytics: FormAnalytics }> = ({ analytics }) => {
             const y = h - padBottom - barH;
             return (
               <>
-                <rect x={x} y={y} width={barW} height={barH} rx="2" fill={d.count ? "var(--accent)" : "var(--border)"} opacity={d.count ? 0.9 : 0.6} />
+                <rect x={x} y={y} width={barW} height={barH} rx="2" fill={d.count ? "var(--primary)" : "var(--border)"} opacity={d.count ? 0.9 : 0.6} />
                 <title>{`${d.date}: ${d.count}`}</title>
               </>
             );
@@ -426,7 +426,7 @@ const AnalyticsView: FC<{ analytics: FormAnalytics }> = ({ analytics }) => {
           {daily.map((d, i) => {
             if (i % 5 !== 0 && i !== daily.length - 1) return null;
             const x = padLeft + i * (chartW / daily.length) + (chartW / daily.length) / 2;
-            return <text x={x} y={h - 6} text-anchor="middle" font-size="8" fill="var(--text-muted)">{d.date.slice(5)}</text>;
+            return <text x={x} y={h - 6} text-anchor="middle" font-size="8" fill="var(--subtle-foreground)">{d.date.slice(5)}</text>;
           })}
         </svg>
         {total === 0 ? <p class="t2 small mt8" style="text-align:center">No submissions in the last 30 days.</p> : null}
@@ -434,7 +434,7 @@ const AnalyticsView: FC<{ analytics: FormAnalytics }> = ({ analytics }) => {
 
       <div class="card card-b mb16">
         <div class="flex between mb8"><span class="small" style="font-weight:600">Funnel signals — last 7 days</span><span class="muted small">views vs. submissions</span></div>
-        <div style="display:grid;gap:8px">{dailyViews.slice(-7).map((view, i) => { const submitted = daily.slice(-7)[i]?.count ?? 0; const width = view.count ? Math.min(100, submitted / view.count * 100) : 0; return <div><div class="flex between small"><span class="muted">{view.date.slice(5)}</span><span>{fmtNumber(view.count)} views · {fmtNumber(submitted)} submissions</span></div><div style="height:6px;background:var(--border);border-radius:999px;margin-top:4px"><div style={`height:6px;width:${width}%;background:var(--accent);border-radius:999px`}></div></div></div>; })}</div>
+        <div style="display:grid;gap:8px">{dailyViews.slice(-7).map((view, i) => { const submitted = daily.slice(-7)[i]?.count ?? 0; const width = view.count ? Math.min(100, submitted / view.count * 100) : 0; return <div><div class="flex between small"><span class="muted">{view.date.slice(5)}</span><span>{fmtNumber(view.count)} views · {fmtNumber(submitted)} submissions</span></div><div style="height:6px;background:var(--border);border-radius:999px;margin-top:4px"><div style={`height:6px;width:${width}%;background:var(--primary);border-radius:999px`}></div></div></div>; })}</div>
       </div>
 
       {campaigns.length ? <div class="card mb16"><div class="card-h">Campaign attribution</div><table class="tbl"><thead><tr><th>Source</th><th>Medium</th><th>Campaign</th><th class="num">Views</th></tr></thead><tbody>{campaigns.map((campaign) => <tr><td>{campaign.source}</td><td>{campaign.medium}</td><td>{campaign.campaign}</td><td class="num">{fmtNumber(campaign.count)}</td></tr>)}</tbody></table></div> : null}

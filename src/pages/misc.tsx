@@ -416,7 +416,7 @@ export const LoginPage: FC<{ error?: string }> = ({ error }) => (
             <h1 style="font-size:17px;text-align:center;margin-bottom:4px">Log in to your workspace</h1>
             <p class="t2 small" style="text-align:center;margin-bottom:18px">Use your workspace account or the bootstrap admin password.</p>
             {error ? (
-              <div class="callout mb16" style="background:var(--danger-bg);border-color:rgba(196,69,61,.25)">
+              <div class="callout mb16" style="background:var(--danger-subtle);border-color:rgba(196,69,61,.25)">
                 <IconAlert size={15} />
                 <div>{error}</div>
               </div>

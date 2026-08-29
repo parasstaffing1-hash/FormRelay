@@ -18,15 +18,60 @@ type Props = {
 type Theme = { font?: string; background?: string; text?: string; button?: string; radius?: number; logo?: string; cover?: string };
 
 const PUBLIC_CSS = String.raw`
-.public-wrap{min-height:100vh;background:var(--form-bg,#f7f7f5);display:flex;align-items:flex-start;justify-content:center;padding:32px 16px;color:var(--form-text,#37352f);font-family:var(--form-font,Inter,system-ui,sans-serif)}
-.public-card{width:100%;max-width:640px;background:#fff;border:1px solid var(--border);border-radius:var(--form-radius,10px);box-shadow:0 1px 2px rgba(15,15,15,.06);overflow:hidden}
-.public-cover{height:120px;background:var(--form-button,#2383e2) center/cover no-repeat}
-.public-logo{max-height:38px;max-width:180px;object-fit:contain;margin-bottom:12px}
-.public-head{padding:22px 22px 0}.public-head h1{font-size:22px;font-weight:650;letter-spacing:-.02em;line-height:1.25}.public-head p{font-size:13.5px;color:var(--text-secondary);margin-top:4px}
-.public-body{padding:18px 22px 22px}.public-foot{padding:12px 22px;border-top:1px solid var(--border);background:var(--surface-secondary);font-size:12.5px;color:var(--text-muted);text-align:center}
-.field-error{font-size:12.5px;color:var(--danger);margin-top:5px}.input.input-error,.textarea.input-error,.select.input-error{border-color:var(--danger);box-shadow:0 0 0 2px rgba(196,69,61,.12)}
-.radio-group,.check-group{display:flex;flex-direction:column;gap:8px;margin-top:2px}.rating-group{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:2px}.rating-group label{display:inline-flex;align-items:center;gap:4px;cursor:pointer}
-.heading-block{font-size:18px;font-weight:600;margin:10px 0 8px;letter-spacing:-.01em}.paragraph-block{font-size:13.5px;color:var(--text-secondary);margin:6px 0 12px;line-height:1.6}.page-section{display:block}.page-section[hidden]{display:none}.progress-track{height:4px;background:var(--border);margin:0 22px 16px;border-radius:99px;overflow:hidden}.progress-fill{height:100%;background:var(--form-button,#2383e2);transition:width .2s}.page-actions{display:flex;gap:8px;margin-top:14px}.page-actions .btn{flex:1}.resume-note{font-size:12px;color:var(--text-muted);margin-top:10px;text-align:center}.closed-form{padding:28px 22px 32px;text-align:center}.closed-form h2{font-size:18px;margin:0 0 8px}
+/* Respondent-facing surface. Theme variables (--form-*) are author-supplied and
+   sanitised before render; everything else resolves to a product token. */
+.public-wrap {
+  min-height: 100vh; padding: var(--space-8) var(--space-4);
+  background: var(--form-bg, #f8f8f7);
+  color: var(--form-text, #1a1a1a);
+  font-family: var(--form-font, var(--font-ui));
+  display: flex; align-items: flex-start; justify-content: center;
+}
+.public-card {
+  width: 100%; max-width: 640px; background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--form-radius, var(--radius-xl));
+  box-shadow: var(--shadow-xs); overflow: hidden;
+}
+.public-cover { height: 120px; background: var(--form-button, var(--primary)) center/cover no-repeat; }
+.public-logo { max-height: 38px; max-width: 180px; object-fit: contain; margin-bottom: var(--space-3); }
+.public-head { padding: var(--space-6) var(--space-6) 0; }
+.public-head h1 { font-size: var(--text-h1); line-height: var(--leading-h1); font-weight: var(--weight-semibold); letter-spacing: var(--tracking-tight); }
+.public-head p { font-size: var(--text-body-sm); color: var(--muted-foreground); margin-top: var(--space-1); }
+.public-body { padding: var(--space-5) var(--space-6) var(--space-6); }
+.public-foot {
+  padding: var(--space-3) var(--space-6); border-top: 1px solid var(--border-subtle);
+  background: var(--surface-subtle); font-size: var(--text-caption);
+  color: var(--subtle-foreground); text-align: center;
+}
+
+.field-error { font-size: var(--text-caption); color: var(--danger); margin-top: 6px; }
+.input.input-error, .textarea.input-error, .select.input-error { border-color: var(--danger); }
+.input.input-error:focus, .textarea.input-error:focus { box-shadow: 0 0 0 3px var(--danger-subtle); }
+
+.radio-group, .check-group { display: flex; flex-direction: column; gap: var(--space-2); margin-top: 2px; }
+.rating-group { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; margin-top: 2px; }
+.rating-group label { display: inline-flex; align-items: center; gap: var(--space-1); cursor: pointer; }
+
+.heading-block { font-size: var(--text-h2); line-height: var(--leading-h2); font-weight: var(--weight-semibold); margin: var(--space-3) 0 var(--space-2); }
+.paragraph-block { font-size: var(--text-body-sm); color: var(--muted-foreground); margin: 6px 0 var(--space-3); line-height: 1.6; }
+
+.page-section { display: block; }
+.page-section[hidden] { display: none; }
+.progress-track { height: 4px; background: var(--muted); margin: 0 var(--space-6) var(--space-4); border-radius: var(--radius-full); overflow: hidden; }
+.progress-fill { height: 100%; background: var(--form-button, var(--primary)); transition: width var(--motion-slow) var(--ease); }
+
+.page-actions { display: flex; gap: var(--space-2); margin-top: var(--space-4); }
+.page-actions .btn { flex: 1; }
+.resume-note { font-size: var(--text-caption); color: var(--subtle-foreground); margin-top: var(--space-3); text-align: center; }
+.closed-form { padding: var(--space-8) var(--space-6); text-align: center; }
+.closed-form h2 { font-size: var(--text-h2); margin: 0 0 var(--space-2); }
+
+@media (max-width: 600px) {
+  .public-wrap { padding: 0; }
+  .public-card { border-radius: 0; border-left: 0; border-right: 0; min-height: 100vh; }
+  .public-head { padding-top: var(--space-8); }
+}
 `;
 
 function parseTheme(raw: string | null | undefined): Theme {
@@ -130,7 +175,7 @@ const BlockField: FC<{ block: Block; errors: Record<string, string>; values: Rec
     case "radio": return wrap(<>{labelWithReq}<div class="radio-group">{(block.options ?? []).map((opt) => <label class="checkbox-row"><input type="radio" name={block.id} value={opt} checked={val === opt} /><span>{opt}</span></label>)}</div>{helpAndError}</>);
     case "checkbox_choice": return wrap(<>{labelWithReq}<div class="check-group">{(block.options ?? []).map((opt) => <label class="checkbox-row"><input type="checkbox" name={block.id} value={opt} checked={isChecked(values, block.id, opt)} /><span>{opt}</span></label>)}</div>{helpAndError}</>);
     case "checkbox": return wrap(<><label class="checkbox-row"><input type="checkbox" name={block.id} checked={!!val && val !== ""} value="on" /><span>{label}{block.required ? <span style="color:var(--danger);margin-left:4px">*</span> : null}</span></label>{helpAndError}</>);
-    case "rating": return wrap(<>{labelWithReq}<div class="rating-group">{[1, 2, 3, 4, 5].map((n) => { const s = String(n); const checked = val === s; return <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;border:1px solid var(--border);border-radius:6px;padding:6px 10px;background:var(--surface)"><input type="radio" name={block.id} value={s} checked={checked} /><span style={`display:inline-flex;color:${checked ? "var(--accent)" : "var(--text-muted)"}`}>{starIcon(checked)}</span><span style="font-size:13px;font-weight:500">{s}</span></label>; })}</div>{helpAndError}</>);
+    case "rating": return wrap(<>{labelWithReq}<div class="rating-group">{[1, 2, 3, 4, 5].map((n) => { const s = String(n); const checked = val === s; return <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;border:1px solid var(--border);border-radius:6px;padding:6px 10px;background:var(--surface)"><input type="radio" name={block.id} value={s} checked={checked} /><span style={`display:inline-flex;color:${checked ? "var(--primary)" : "var(--subtle-foreground)"}`}>{starIcon(checked)}</span><span style="font-size:13px;font-weight:500">{s}</span></label>; })}</div>{helpAndError}</>);
     case "file": return wrap(<>{labelWithReq}<input class={`input${errClass}`} id={block.id} name={block.id} type="file" multiple={block.multiple ? true : undefined} accept={block.accept} aria-invalid={hasError ? "true" : undefined} />{helpAndError}</>);
     default: return null;
   }
