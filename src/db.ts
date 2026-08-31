@@ -4,6 +4,7 @@ import {
   ApiKeyRow, WorkflowRow, WorkflowRunRow, WorkflowStepRow, UserRow, MembershipRow, InvitationRow,
 } from "./types";
 import { ChainLink, computeRowHash, genesisHash } from "./integrity";
+import { SubmissionEvent } from "./events";
 
 const ALPHABET = "abcdefghijkmnopqrstuvwxyz23456789";
 
@@ -1035,4 +1036,74 @@ export async function getInsightRows(
     .bind(formId, sinceMs, limit)
     .all<{ status: string; data: string; created_at: number; completed_at: number | null; user_agent: string }>();
   return results ?? [];
+}
+
+/* ---------- submission event timeline ---------- */
+
+/**
+ * Records one pipeline stage. Never throws: an audit write must not be able to fail the
+ * request it is describing.
+ */
+export async function recordEvent(
+  db: D1Database,
+  submissionId: number,
+  stage: string,
+  status: string,
+  detail = "",
+  responseStatus: number | null = null,
+  attempt = 1
+): Promise<void> {
+  try {
+    await db.prepare(
+      "INSERT INTO submission_events (submission_id, stage, status, detail, response_status, attempt, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    ).bind(submissionId, stage, status, detail.slice(0, 600), responseStatus, attempt, Date.now()).run();
+  } catch {}
+}
+
+export async function listEvents(db: D1Database, submissionId: number): Promise<SubmissionEvent[]> {
+  const { results } = await db
+    .prepare("SELECT * FROM submission_events WHERE submission_id = ? ORDER BY created_at ASC, id ASC")
+    .bind(submissionId).all<SubmissionEvent>();
+  return results ?? [];
+}
+
+export async function listFailedEvents(db: D1Database, limit = 50): Promise<(SubmissionEvent & { form_id: string })[]> {
+  const { results } = await db.prepare(
+    `SELECT e.*, s.form_id FROM submission_events e
+     JOIN submissions s ON s.id = e.submission_id
+     WHERE e.status = 'failed' ORDER BY e.created_at DESC LIMIT ?`
+  ).bind(limit).all<SubmissionEvent & { form_id: string }>();
+  return results ?? [];
+}
+
+/* ---------- idempotency + duplicate detection ---------- */
+
+export async function findByIdempotencyKey(db: D1Database, formId: string, key: string): Promise<SubmissionRow | null> {
+  if (!key) return null;
+  return await db.prepare("SELECT * FROM submissions WHERE form_id = ? AND idempotency_key = ?")
+    .bind(formId, key).first<SubmissionRow>();
+}
+
+/** Recent identical payload, used to flag duplicates when no idempotency key was sent. */
+export async function findRecentByFingerprint(db: D1Database, formId: string, fingerprint: string, windowMs = 10 * 60 * 1000): Promise<SubmissionRow | null> {
+  if (!fingerprint) return null;
+  return await db.prepare("SELECT * FROM submissions WHERE form_id = ? AND fingerprint = ? AND created_at > ? LIMIT 1")
+    .bind(formId, fingerprint, Date.now() - windowMs).first<SubmissionRow>();
+}
+
+export async function setSubmissionIngestMeta(
+  db: D1Database,
+  id: number,
+  idempotencyKey: string,
+  fingerprint: string,
+  spamScore: number,
+  spamSignals: string
+): Promise<void> {
+  await db.prepare(
+    "UPDATE submissions SET idempotency_key = COALESCE(NULLIF(?, ''), idempotency_key), fingerprint = ?, spam_score = ?, spam_signals = ? WHERE id = ?"
+  ).bind(idempotencyKey, fingerprint, spamScore, spamSignals, id).run();
+}
+
+export async function updateFormSpamRules(db: D1Database, formId: string, rulesJson: string): Promise<void> {
+  await db.prepare("UPDATE forms SET spam_rules_json = ? WHERE id = ?").bind(rulesJson, formId).run();
 }

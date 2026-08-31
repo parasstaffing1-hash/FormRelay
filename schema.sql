@@ -87,7 +87,8 @@ CREATE TABLE IF NOT EXISTS forms (
   consent_text TEXT NOT NULL DEFAULT '',
   field_acl_json TEXT NOT NULL DEFAULT '{}',
   recurrence TEXT NOT NULL DEFAULT 'off',
-  unlock_at INTEGER
+  unlock_at INTEGER,
+  spam_rules_json TEXT NOT NULL DEFAULT ''
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_forms_slug ON forms (slug) WHERE slug IS NOT NULL AND slug != '';
@@ -138,8 +139,17 @@ CREATE TABLE IF NOT EXISTS submissions (
   quality_json TEXT NOT NULL DEFAULT '{}',
   consent_json TEXT NOT NULL DEFAULT '',
   respondent_key TEXT,
-  cohort TEXT NOT NULL DEFAULT ''
+  cohort TEXT NOT NULL DEFAULT '',
+  idempotency_key TEXT,
+  fingerprint TEXT,
+  spam_score INTEGER NOT NULL DEFAULT 0,
+  spam_signals TEXT NOT NULL DEFAULT '[]'
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_submissions_idempotency
+  ON submissions (form_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_submissions_fingerprint
+  ON submissions (form_id, fingerprint) WHERE fingerprint IS NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_submissions_respondent
   ON submissions (form_id, respondent_key) WHERE respondent_key IS NOT NULL;
@@ -307,3 +317,18 @@ CREATE INDEX IF NOT EXISTS idx_response_views_submission ON response_views (subm
 CREATE INDEX IF NOT EXISTS idx_response_views_created ON response_views (created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_submissions_cohort ON submissions (form_id, cohort);
+
+
+CREATE TABLE IF NOT EXISTS submission_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  submission_id INTEGER NOT NULL,
+  stage TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ok',
+  detail TEXT NOT NULL DEFAULT '',
+  response_status INTEGER,
+  attempt INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_submission_events_sub ON submission_events (submission_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_submission_events_failed ON submission_events (status, created_at DESC) WHERE status = 'failed';

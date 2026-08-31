@@ -5,6 +5,8 @@ import { IconAlert } from "../ui/icons";
 import { SubmissionWithContext } from "../types";
 import { fmtDateTime, relTime, submissionRef } from "../util";
 import { parseData } from "./shared";
+import { SubmissionEvent, stageLabel } from "../events";
+import { SpamSignal } from "../spam-score";
 
 export const SubmissionDetailPage: FC<{
   path: string;
@@ -14,8 +16,15 @@ export const SubmissionDetailPage: FC<{
   commands: { label: string; href: string; icon: string; keywords?: string }[];
   formCount: number;
   submissionCount: number;
-}> = ({ path, sub, backHref, toastMsg, commands, formCount, submissionCount }) => {
+  events?: SubmissionEvent[];
+}> = ({ path, sub, backHref, toastMsg, commands, formCount, submissionCount, events = [] }) => {
   const data = parseData(sub.data);
+  let spamSignals: SpamSignal[] = [];
+  try {
+    const parsed = JSON.parse(sub.spam_signals ?? "[]");
+    if (Array.isArray(parsed)) spamSignals = parsed as SpamSignal[];
+  } catch {}
+  const spamScore = sub.spam_score ?? 0;
   const fields = Object.entries(data).filter(([k]) => !k.startsWith("_"));
   const meta: [string, string][] = [
     ["IP address", sub.ip || "—"],
@@ -85,7 +94,59 @@ export const SubmissionDetailPage: FC<{
         </div>
 
         <div style="width:260px;flex-shrink:0">
-          <h2 class="section-title">Metadata</h2>
+          <h2 class="section-title">Delivery timeline</h2>
+          <p class="small muted" style="margin-top:-8px;margin-bottom:12px">
+            Every stage this submission passed through. A stage that failed is shown with
+            its reason; a stage that never ran is absent.
+          </p>
+          {events.length === 0 ? (
+            <div class="callout">No pipeline events recorded for this submission.</div>
+          ) : (
+            <div class="card">
+              {events.map((event) => (
+                <div class="list-item" style="align-items:flex-start">
+                  <span
+                    class={`badge ${event.status === "ok" ? "badge-success" : event.status === "failed" ? "badge-danger" : "badge-neutral"}`}
+                    style="flex-shrink:0;min-width:64px;justify-content:center"
+                  >
+                    {event.status}
+                  </span>
+                  <div class="grow">
+                    <div class="cell-main">{stageLabel(event.stage)}</div>
+                    <div class="cell-sub">
+                      {event.detail}
+                      {event.response_status ? ` · HTTP ${event.response_status}` : ""}
+                      {event.attempt > 1 ? ` · attempt ${event.attempt}` : ""}
+                    </div>
+                  </div>
+                  <div class="small muted nowrap">{relTime(event.created_at)}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <h2 class="section-title mt16">Spam analysis</h2>
+          <div class="card">
+            <div class="card-b">
+              <div class="flex between">
+                <div class="cell-main">Score {spamScore} / 100</div>
+                <span class={`badge ${spamScore >= 70 ? "badge-danger" : spamScore > 0 ? "badge-warning" : "badge-success"}`}>
+                  {spamScore >= 70 ? "filed as spam" : spamScore > 0 ? "some signals" : "clean"}
+                </span>
+              </div>
+              {spamSignals.length === 0 ? (
+                <p class="small muted mt8">No spam signals were raised for this submission.</p>
+              ) : (
+                <ul class="small muted mt8" style="margin:0;padding-left:18px">
+                  {spamSignals.map((signal) => (
+                    <li style="margin-bottom:4px">{signal.detail} <span class="mono">(+{signal.weight})</span></li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+
+          <h2 class="section-title mt16">Metadata</h2>
           <div class="card card-b">
             {meta.map(([k, v]) => (
               <div class="kv">

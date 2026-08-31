@@ -91,6 +91,13 @@ import {
   setSubmissionData,
   resealChain,
   runReadOnlyQuery,
+  recordEvent,
+  listEvents,
+  listFailedEvents,
+  findByIdempotencyKey,
+  findRecentByFingerprint,
+  setSubmissionIngestMeta,
+  updateFormSpamRules,
   getInsightRows,
   rotateWebhookSecret,
   getAllowedDomains,
@@ -108,6 +115,8 @@ import { verifyChain, verifyPrefill, buildPrefillUrl, PREFILL_SIG_PARAM } from "
 import { diffSchemas, summarizeDiff } from "./diff";
 import { verifyPow, issuePowChallenge, blindIdentity, buildConsentReceipt, scoreQuality, issueStartToken, elapsedFromStartToken, parseFieldAcl, redactForRole } from "./trust";
 import { POW_CLIENT_JS } from "./pow-client";
+import { readIdempotencyKey, IDEMPOTENCY_HEADER, contentFingerprint } from "./events";
+import { assessSpam, parseSpamRules, spamSummary } from "./spam-score";
 import { guardSelect, cohortFor, isRecurrence, Recurrence, applyMigration, migrateSchemaBlocks, MigrationOp, isSealed, sealedNotice } from "./ops";
 import { PublicFormPage, FORM_RUNTIME_JS } from "./pages/public-form";
 import { BuilderPage, BUILDER_JS } from "./pages/builder";
@@ -662,6 +671,22 @@ app.post("/f/:id", async (c) => {
       }
     }
 
+    // Idempotency: a repeat of the same key on this form returns the original lead rather
+    // than creating a second one, so a client-side retry cannot duplicate a submission.
+    const idempotencyKey = readIdempotencyKey(c.req.header(IDEMPOTENCY_HEADER), rawPayload);
+    if (idempotencyKey) {
+      const existing = await findByIdempotencyKey(c.env.DB, formId, idempotencyKey);
+      if (existing) {
+        await recordEvent(c.env.DB, existing.id, "received", "skipped", `duplicate idempotency key ${idempotencyKey}`);
+        return isJson
+          ? c.json({ ok: true, duplicate: true, submission_id: existing.id })
+          : c.text("This submission was already received.", 200);
+      }
+    }
+
+    const fingerprint = await contentFingerprint(formId, data);
+    const duplicate = !idempotencyKey && !!(await findRecentByFingerprint(c.env.DB, formId, fingerprint));
+
     const consent = form.consent_text ? await buildConsentReceipt(form.consent_text) : null;
     const elapsedMs = await elapsedFromStartToken(formId, String(rawPayload._started ?? ""), trustSecret);
     const quality = scoreQuality({
@@ -670,6 +695,19 @@ app.post("/f/:id", async (c) => {
       textFields: schema.blocks.filter((block) => ["short_text", "long_text"].includes(block.type)).map((block) => block.id),
       elapsedMs,
     });
+
+    // Content-level spam scoring, separate from the yes/no gates above. Produces a score
+    // with the reasons behind it so the decision can be argued with in the inbox.
+    const emailField = schema.blocks.find((block) => block.type === "email");
+    const assessment = assessSpam({
+      values: data,
+      email: emailField ? data[emailField.id] : undefined,
+      elapsedMs,
+      recentFromIp: await countRecentByIp(c.env.DB, ip, Date.now() - 10 * 60 * 1000),
+      duplicate,
+      rules: parseSpamRules(form.spam_rules_json),
+    });
+    if (assessment.spam) verdict = { spam: true, reason: assessment.signals.map((s) => s.rule).join(",") };
 
     const resumeToken = typeof rawPayload._resume === "string" ? rawPayload._resume : "";
     // Every non-spam response gets a receipt token so the respondent can later view,
@@ -689,6 +727,11 @@ app.post("/f/:id", async (c) => {
       submissionId = await insertSubmission(c.env.DB, formId, toStoreSchema, ip, userAgent, referer, verdict.spam, receiptHash);
     }
     if (submissionId !== null) {
+      await setSubmissionIngestMeta(c.env.DB, submissionId, idempotencyKey, fingerprint, assessment.score, JSON.stringify(assessment.signals));
+      await recordEvent(c.env.DB, submissionId, "received", "ok", `${contentType.split(";")[0] || "form"} submission`);
+      await recordEvent(c.env.DB, submissionId, "spam_checked", assessment.spam ? "failed" : "ok", assessment.signals.length ? spamSummary(assessment) : "no spam signals");
+      await recordEvent(c.env.DB, submissionId, "validated", "ok", `${Object.keys(data).length} fields accepted`);
+      await recordEvent(c.env.DB, submissionId, "persisted", "ok", `stored as submission ${submissionId}`);
       await annotateSubmission(c.env.DB, submissionId, JSON.stringify(quality), consent ? JSON.stringify(consent) : "", respondentKey);
       const recurrence = (form.recurrence ?? "off") as Recurrence;
       if (recurrence !== "off") await setSubmissionCohort(c.env.DB, submissionId, cohortFor(Date.now(), recurrence));
@@ -706,15 +749,27 @@ app.post("/f/:id", async (c) => {
       const workflows = await listWorkflows(c.env.DB, formId);
       const activeWorkflows = workflows.filter((workflow) => workflow.active && workflow.trigger === "submission.completed");
       const createdAt = Date.now();
+      // Each downstream stage records its own outcome, successes included, so the timeline
+      // shows a stage that failed *and* a stage that never ran.
+      const track = async <T,>(stage: string, run: Promise<T>): Promise<void> => {
+        if (submissionId === null) { await run.catch(() => {}); return; }
+        try {
+          await run;
+          await recordEvent(c.env.DB, submissionId, stage, "ok", "delivered");
+        } catch (error) {
+          await recordEvent(c.env.DB, submissionId, stage, "failed", error instanceof Error ? error.message : String(error));
+        }
+      };
+
       c.executionCtx.waitUntil(
         Promise.allSettled([
-          sendNotification(c.env, form, data),
+          track("notification", sendNotification(c.env, form, data)),
           recordFormEvent(c.env.DB, formId, "submission", referer, trackingMetadata(c.req.url)),
-          sendAutoReply(c.env, form, data),
+          track("autoresponder", sendAutoReply(c.env, form, data)),
           ...(submissionId !== null
-            ? activeHooks.map((h) => deliverSubmission(c.env.DB, h, { id: form.id, name: form.name }, submissionId, data, createdAt))
+            ? activeHooks.map((h) => track("webhook", deliverSubmission(c.env.DB, h, { id: form.id, name: form.name }, submissionId, data, createdAt)))
             : []),
-          ...activeWorkflows.map((workflow) => executeWorkflow(c.env, workflow, form, submissionId, data)),
+          ...activeWorkflows.map((workflow) => track("workflow", executeWorkflow(c.env, workflow, form, submissionId, data))),
           createNotification(c.env.DB, "submission.created", `New submission: ${form.name}`, submissionId === null ? "Stored response" : `Response #${submissionId}`),
         ])
       );
@@ -1792,6 +1847,7 @@ app.get("/admin/submissions/:id", async (c) => {
   c.executionCtx.waitUntil(recordResponseView(c.env.DB, sub.id, viewer.label, "view"));
 
   const views = await listResponseViews(c.env.DB, sub.id, 10);
+  const timeline = await listEvents(c.env.DB, sub.id);
   const stats = await getDashboardStats(c.env.DB);
   return c.html(
     <SubmissionDetailPage
@@ -1802,6 +1858,7 @@ app.get("/admin/submissions/:id", async (c) => {
       commands={baseCommands(originOf(c.req.url))}
       formCount={stats.form_count}
       submissionCount={stats.submission_count}
+      events={timeline}
     />
   );
 });
