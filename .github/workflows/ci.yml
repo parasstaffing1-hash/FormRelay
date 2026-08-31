@@ -89,6 +89,11 @@ jobs:
           npm run migrate:pg:status | tee status.txt
           grep -q "pending:  0" status.txt || { echo "::error::migrations did not reach a clean state"; exit 1; }
 
+      # The smoke script drives the compiled modules, so they have to exist first. This
+      # job does not run the unit tests, which is what normally produces them.
+      - name: Compile modules the smoke test drives
+        run: npm run build:tests
+
       # Exercises the adapter against a real server: generated ids, ILIKE search, the
       # rate-limiter upsert, transactional batch, and the R2 metadata rows.
       - name: Adapter works end to end
