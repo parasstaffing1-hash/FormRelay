@@ -2,18 +2,23 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
+
+# A second push to the same branch makes the first run's result irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check:
+    name: Typecheck, tests, build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - run: npm ci
@@ -24,17 +29,93 @@ jobs:
       - name: Tests
         run: npm test
 
-      # schema.sql is what a fresh install runs; migrations/ is what an existing
-      # deployment runs. They drifted apart once already, silently, and the app only
-      # noticed when a query hit a missing column in production shape. Applying both to
-      # a scratch database proves each is independently valid SQL.
-      - name: Schema and migrations apply cleanly
+      # Compiling the Worker catches what typecheck cannot: an import that resolves for
+      # tsc but not for the bundler, or a dependency that cannot run on the edge runtime.
+      - name: Worker builds
+        run: npx wrangler deploy --dry-run --outdir=.dryrun
+
+  postgres:
+    name: Schema and migrations on PostgreSQL
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: formrelay_ci
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 5432:5432
+
+    env:
+      DATABASE_URL: postgres://postgres:ci@localhost:5432/formrelay_ci
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # schema.postgres.sql is generated from schema.sql. If someone edits the source and
+      # forgets to regenerate, a fresh Postgres install silently gets a different shape
+      # than a D1 one. Regenerating and diffing makes that a build failure instead.
+      - name: Generated schema is up to date
         run: |
-          npx wrangler d1 execute formrelay --local --file=./schema.sql
-          for m in migrations/*.sql; do
-            echo "checking $m parses"
-            node -e "
-              const sql = require('fs').readFileSync('$m', 'utf8');
-              if (!sql.trim()) { console.error('empty migration: $m'); process.exit(1); }
-            "
-          done
+          npm run pg:schema
+          if ! git diff --exit-code --quiet schema.postgres.sql; then
+            echo "::error::schema.postgres.sql is stale. Run 'npm run pg:schema' and commit the result."
+            git diff schema.postgres.sql
+            exit 1
+          fi
+
+      # The previous version of this step only checked that migration files were non-empty,
+      # while claiming to prove they were valid SQL. Executing them against a real server
+      # is the only thing that actually proves it.
+      - name: Schema applies to a real PostgreSQL server
+        run: node scripts/pg-init.mjs
+
+      - name: Migration runner reaches a clean state
+        run: |
+          npm run migrate:pg:baseline
+          npm run migrate:pg:status | tee status.txt
+          grep -q "pending:  0" status.txt || { echo "::error::migrations did not reach a clean state"; exit 1; }
+
+      # Exercises the adapter against a real server: generated ids, ILIKE search, the
+      # rate-limiter upsert, transactional batch, and the R2 metadata rows.
+      - name: Adapter works end to end
+        run: npm run pg:smoke
+
+      # A migration that fails must leave nothing behind. This is the guarantee the
+      # Postgres path claims over D1, so it is worth asserting rather than trusting.
+      - name: A failing migration rolls back completely
+        run: |
+          cat > migrations/9999-ci-rollback-probe.sql <<'SQL'
+          CREATE TABLE IF NOT EXISTS ci_rollback_probe (id BIGSERIAL PRIMARY KEY);
+          SELECT nonexistent_column FROM ci_rollback_probe;
+          SQL
+          if npm run migrate:pg; then
+            echo "::error::the broken probe migration was reported as successful"
+            exit 1
+          fi
+          rm migrations/9999-ci-rollback-probe.sql
+          node -e "
+            const postgres = require('postgres');
+            const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+            (async () => {
+              const t = await sql\`SELECT to_regclass('public.ci_rollback_probe') AS t\`;
+              if (t[0].t !== null) { console.error('probe table survived a failed migration'); process.exit(1); }
+              const m = await sql\`SELECT count(*)::int AS n FROM schema_migrations WHERE version LIKE '9999%'\`;
+              if (m[0].n !== 0) { console.error('failed migration was recorded as applied'); process.exit(1); }
+              console.log('rollback verified: no table, no recorded migration');
+              await sql.end();
+            })();
+          "

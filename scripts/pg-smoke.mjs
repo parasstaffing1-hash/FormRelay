@@ -14,8 +14,19 @@ const { createPgDatabase } = require("../.test-build/pgdriver.js");
 const db_ = require("../.test-build/db.js");
 const rl = require("../.test-build/ratelimit.js");
 
-const line = readFileSync(".dev.vars", "utf8").split(/\r?\n/).find((l) => l.startsWith("DATABASE_URL="));
-const client = postgres(line.slice("DATABASE_URL=".length).trim(), { max: 1, onnotice: () => {} });
+/** CI supplies DATABASE_URL directly; local runs fall back to the gitignored .dev.vars. */
+function connectionString() {
+  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
+  const NEWLINE = String.fromCharCode(10);
+  const line = readFileSync(".dev.vars", "utf8")
+    .split(NEWLINE)
+    .map((l) => l.trim())
+    .find((l) => l.startsWith("DATABASE_URL="));
+  if (!line) throw new Error("No DATABASE_URL in the environment or .dev.vars");
+  return line.slice("DATABASE_URL=".length).trim();
+}
+
+const client = postgres(connectionString(), { max: 1, onnotice: () => {} });
 const DB = createPgDatabase(client);
 
 let failures = 0;
