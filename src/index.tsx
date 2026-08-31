@@ -50,6 +50,9 @@ import {
   updatePartialSubmission,
   completeSubmission,
   getFormBySlug,
+  getFormInWorkspace,
+  transferOwnership,
+  DEFAULT_WORKSPACE,
   updateFormShare,
   updateFormTheme,
   listWorkflows,
@@ -137,9 +140,14 @@ import { guardSelect, cohortFor, isRecurrence, Recurrence, applyMigration, migra
 import { PublicFormPage, FORM_RUNTIME_JS } from "./pages/public-form";
 import { BuilderPage, BUILDER_JS } from "./pages/builder";
 import { audit } from "./audit";
-import { sendNotification, sendAutoReply, EmailDeliveryError } from "./email";
+import { sendNotification, sendAutoReply, selectProvider, EmailDeliveryError } from "./email";
 import { checkSpam, normalizePayload } from "./spam";
 import { deliverSubmission, sendTestWebhook, sweepRetries } from "./webhooks";
+import { sweepRateCounters } from "./ratelimit";
+import { resolveDatabase } from "./dbconnect";
+
+/** Must match the API limiter window in `api.ts`, or the sweep would delete live windows. */
+const RATE_WINDOW_MS = 60_000;
 import { getFiles, countFiles, totalStorage, getFile, saveUpload, deleteFile } from "./files";
 import { CLIENT_JS_WITH_GUARDS, GUARDS_JS } from "./ui/client";
 import { CSS } from "./ui/styles";
@@ -169,7 +177,7 @@ const NAV_ICONS: Record<string, string> = {
   book: "M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z",
 };
 
-type Env = { Bindings: Bindings; Variables: { ingestBody?: string } };
+type Env = { Bindings: Bindings; Variables: { ingestBody?: string; workspaceId?: string } };
 const app = new Hono<Env>();
 
 // Mount API v1 subapp
@@ -206,6 +214,18 @@ async function contentSecurityPolicy(): Promise<string> {
   }
   return cspPromise;
 }
+
+/**
+ * Binds the database for this request before any handler runs.
+ *
+ * Every route reads `c.env.DB`. Resolving it here, once, keeps all 173 prepared statements
+ * engine-agnostic: with Postgres configured this is the adapter, otherwise it is the D1
+ * binding exactly as before. Placed first so no handler can observe an unresolved binding.
+ */
+app.use("*", async (c, next) => {
+  (c.env as { DB: D1Database }).DB = resolveDatabase(c.env);
+  await next();
+});
 
 app.use("*", async (c, next) => {
   await next();
@@ -918,9 +938,9 @@ app.post("/f/:id", async (c) => {
 
       c.executionCtx.waitUntil(
         Promise.allSettled([
-          trackEmail("notification", submissionId, form, data, sendNotification(c.env, form, data)),
+          trackEmail("notification", submissionId, form, data, sendNotification(c.env, form, data, submissionId)),
           recordFormEvent(c.env.DB, formId, "submission", referer, trackingMetadata(c.req.url)),
-          trackEmail("autoresponder", submissionId, form, data, sendAutoReply(c.env, form, data)),
+          trackEmail("autoresponder", submissionId, form, data, sendAutoReply(c.env, form, data, submissionId)),
           ...(submissionId !== null
             ? activeHooks.map((h) => track("webhook", deliverSubmission(c.env.DB, h, { id: form.id, name: form.name }, submissionId, data, createdAt)))
             : []),
@@ -1033,8 +1053,8 @@ app.post("/f/:id", async (c) => {
 
     c.executionCtx.waitUntil(
       Promise.allSettled([
-        logEmail("notification", sendNotification(c.env, form, data)),
-        logEmail("autoresponder", sendAutoReply(c.env, form, data)),
+        logEmail("notification", sendNotification(c.env, form, data, submissionId)),
+        logEmail("autoresponder", sendAutoReply(c.env, form, data, submissionId)),
         ...(submissionId !== null
           ? activeHooks.map((h) =>
               deliverSubmission(c.env.DB, h, { id: form.id, name: form.name }, submissionId, data, createdAt)
@@ -1392,17 +1412,30 @@ app.use("/admin/*", async (c, next) => {
     if (verdict === "malformed") return c.text("Malformed request origin.", 400);
     if (verdict !== "ok") return c.text("Cross-origin admin mutation rejected.", 403);
   }
+  // The session token carries the workspace it was minted for and the membership lookup
+  // above already proved the user belongs to it. A legacy password-only session has no
+  // workspace, so it gets the bootstrap one — which is where its data already lives.
+  c.set("workspaceId", membership?.workspace_id ?? DEFAULT_WORKSPACE);
   if (membership?.role === "viewer" && c.req.method === "POST") return c.text("Viewer memberships are read-only.", 403);
   if (membership && path.startsWith("/admin/settings/members") && membership.role !== "owner") return c.text("Only workspace owners can manage members.", 403);
   await next();
 });
+
+/**
+ * The workspace the current admin request acts in. Set by the `/admin/*` middleware, so it
+ * is always present on an authenticated admin route; the fallback only covers programming
+ * error, and it fails closed onto the bootstrap workspace rather than onto "all forms".
+ */
+function wsOf(c: { get: (k: "workspaceId") => string | undefined }): string {
+  return c.get("workspaceId") ?? DEFAULT_WORKSPACE;
+}
 
 /* ---------- home / dashboard ---------- */
 
 app.get("/admin", async (c) => {
   const [stats, forms, recent, sparkline] = await Promise.all([
     getDashboardStats(c.env.DB),
-    listFormsWithStats(c.env.DB),
+    listFormsWithStats(c.env.DB, undefined, wsOf(c)),
     recentSubmissions(c.env.DB, 8),
     getDashboardAnalytics(c.env.DB),
   ]);
@@ -1433,7 +1466,7 @@ app.get("/admin/forms", async (c) => {
   const q = url.searchParams.get("q")?.trim() || undefined;
   const openNew = url.searchParams.get("new") === "1" && !q;
   const [forms, stats] = await Promise.all([
-    q ? listFormsWithStats(c.env.DB, q) : listFormsWithStats(c.env.DB),
+    q ? listFormsWithStats(c.env.DB, q, wsOf(c)) : listFormsWithStats(c.env.DB, undefined, wsOf(c)),
     getDashboardStats(c.env.DB),
   ]);
   return c.html(
@@ -1457,14 +1490,14 @@ app.post("/admin/forms", async (c) => {
   const rawTemplate = String(body.template ?? "blank");
   const templateKey: TemplateKey = ["blank", "contact", "feedback", "job", "rsvp", "nps", "project", "registration", "consent"].includes(rawTemplate) ? rawTemplate as TemplateKey : "blank";
   const schemaJson = templateKey === "blank" ? null : JSON.stringify(templateSchema(templateKey));
-  const row = await createForm(c.env.DB, { name, schemaJson });
+  const row = await createForm(c.env.DB, { name, schemaJson, workspaceId: wsOf(c) });
   await audit(c.env.DB, "form.created", row.id, name);
   return c.redirect(`/admin/forms/${row.id}?tab=setup&created=1&msg=Form+created`);
 });
 
 app.get("/admin/forms/:id/build", async (c) => {
   const url = new URL(c.req.url);
-  const form = await getForm(c.env.DB, c.req.param("id"));
+  const form = await getFormInWorkspace(c.env.DB, c.req.param("id"), wsOf(c));
   if (!form) return c.notFound();
   const raw = form.schema_json;
   const parsed = parseSchema(raw);
@@ -1486,9 +1519,9 @@ app.get("/admin/forms/:id/build", async (c) => {
 });
 
 app.get("/admin/forms/:id/health", async (c) => {
-  const form = await getForm(c.env.DB, c.req.param("id"));
+  const form = await getFormInWorkspace(c.env.DB, c.req.param("id"), wsOf(c));
   if (!form) return c.notFound();
-  const items = checkFormHealth(form, !!c.env.RESEND_API_KEY);
+  const items = checkFormHealth(form, !!selectProvider(c.env));
   const tone = items.some((item) => item.level === "error") ? "error" : items.some((item) => item.level === "warning") ? "warning" : "ok";
   return c.html(<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Health · {form.name}</title><style dangerouslySetInnerHTML={{ __html: CSS }} /></head><body style="font-family:system-ui;max-width:720px;margin:40px auto;padding:0 20px"><p><a href={`/admin/forms/${form.id}/build`}>← Back to builder</a></p><h1>Form health</h1><p>{form.name} · <strong>{tone}</strong></p><ul>{items.map((item) => <li style={`margin:8px 0;color:${item.level === "error" ? "#b42318" : item.level === "warning" ? "#9a6700" : "#18794e"}`}>{item.level.toUpperCase()}: {item.message}</li>)}</ul></body></html>);
 });
@@ -1496,7 +1529,7 @@ app.get("/admin/forms/:id/health", async (c) => {
 /* Insights: the "why not" half of analytics. Reads the published schema so the funnel
    follows the form respondents actually saw, not an unpublished draft. */
 app.get("/admin/forms/:id/insights", async (c) => {
-  const form = await getForm(c.env.DB, c.req.param("id"));
+  const form = await getFormInWorkspace(c.env.DB, c.req.param("id"), wsOf(c));
   if (!form) return c.notFound();
 
   const requested = Number(new URL(c.req.url).searchParams.get("days"));
@@ -1555,14 +1588,14 @@ app.get("/admin/forms/:id/insights", async (c) => {
 });
 
 app.get("/admin/forms/:id/versions", async (c) => {
-  const form = await getForm(c.env.DB, c.req.param("id"));
+  const form = await getFormInWorkspace(c.env.DB, c.req.param("id"), wsOf(c));
   if (!form) return c.notFound();
   const versions = await listFormVersions(c.env.DB, form.id, 50);
   return c.html(<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Version history · {form.name}</title><style dangerouslySetInnerHTML={{ __html: CSS }} /></head><body style="font-family:system-ui;max-width:820px;margin:40px auto;padding:0 20px"><p><a href={`/admin/forms/${form.id}/build`}>← Back to builder</a></p><h1>Version history</h1><p class="muted">Saved schema snapshots for {form.name}. Restoring a version replaces the current draft and published copy.</p>{versions.length ? <div class="card card-b">{versions.map((version) => <div class="kv" style="align-items:center"><div><strong>Version {version.id}</strong><div class="muted small">{new Date(version.created_at).toISOString()} · {version.created_by}</div></div><form method="post" action={`/admin/forms/${form.id}/versions/${version.id}/restore`} data-confirm="Restore this version?"><button class="btn btn-secondary btn-sm" type="submit">Restore</button></form></div>)}</div> : <p>No snapshots yet. Saving the builder will create the first snapshot.</p>}<script src="/assets/guards.js" defer /></body></html>);
 });
 
 app.get("/admin/forms/:id/trust", async (c) => {
-  const form = await getForm(c.env.DB, c.req.param("id"));
+  const form = await getFormInWorkspace(c.env.DB, c.req.param("id"), wsOf(c));
   if (!form) return c.notFound();
   const schema = parseSchema(form.published_json) ?? parseSchema(form.schema_json);
   const fields = (schema?.blocks ?? []).filter((block) => !["heading", "paragraph", "divider", "page"].includes(block.type));
@@ -1659,7 +1692,7 @@ app.get("/admin/forms/:id/trust", async (c) => {
 
 app.post("/admin/forms/:id/trust", async (c) => {
   const id = c.req.param("id");
-  const form = await getForm(c.env.DB, id);
+  const form = await getFormInWorkspace(c.env.DB, id, wsOf(c));
   if (!form) return c.notFound();
   const body = await c.req.parseBody({ all: true });
 
@@ -1685,7 +1718,7 @@ app.post("/admin/forms/:id/trust", async (c) => {
 });
 
 app.get("/admin/forms/:id/prefill", async (c) => {
-  const form = await getForm(c.env.DB, c.req.param("id"));
+  const form = await getFormInWorkspace(c.env.DB, c.req.param("id"), wsOf(c));
   if (!form) return c.notFound();
   const schema = parseSchema(form.published_json) ?? parseSchema(form.schema_json);
   const fields = (schema?.blocks ?? []).filter((block) => !["heading", "paragraph", "divider", "page"].includes(block.type));
@@ -1757,7 +1790,7 @@ app.get("/admin/forms/:id/prefill", async (c) => {
 
 app.post("/admin/forms/:id/prefill/mode", async (c) => {
   const id = c.req.param("id");
-  if (!(await getForm(c.env.DB, id))) return c.notFound();
+  if (!(await getFormInWorkspace(c.env.DB, id, wsOf(c)))) return c.notFound();
   const body = await c.req.parseBody();
   await setFormPrefillSignedOnly(c.env.DB, id, body.signed_only === "on");
   await audit(c.env.DB, "form.prefill.mode", id, body.signed_only === "on" ? "signed only" : "open");
@@ -1765,7 +1798,7 @@ app.post("/admin/forms/:id/prefill/mode", async (c) => {
 });
 
 app.get("/admin/forms/:id/integrity", async (c) => {
-  const form = await getForm(c.env.DB, c.req.param("id"));
+  const form = await getFormInWorkspace(c.env.DB, c.req.param("id"), wsOf(c));
   if (!form) return c.notFound();
   const links = await chainLinks(c.env.DB, form.id);
   const verdict = await verifyChain(links);
@@ -1824,7 +1857,7 @@ app.get("/admin/forms/:id/integrity", async (c) => {
 });
 
 app.post("/admin/forms/:id/integrity/anchor", async (c) => {
-  const form = await getForm(c.env.DB, c.req.param("id"));
+  const form = await getFormInWorkspace(c.env.DB, c.req.param("id"), wsOf(c));
   if (!form) return c.notFound();
   const links = await chainLinks(c.env.DB, form.id);
   const verdict = await verifyChain(links);
@@ -1837,7 +1870,7 @@ app.post("/admin/forms/:id/integrity/anchor", async (c) => {
 });
 
 app.get("/admin/forms/:id/versions/:a/compare/:b", async (c) => {
-  const form = await getForm(c.env.DB, c.req.param("id"));
+  const form = await getFormInWorkspace(c.env.DB, c.req.param("id"), wsOf(c));
   if (!form) return c.notFound();
   const [left, right] = await Promise.all([
     getFormVersion(c.env.DB, Number(c.req.param("a"))),
@@ -1892,7 +1925,7 @@ app.get("/admin/forms/:id/versions/:a/compare/:b", async (c) => {
 app.post("/admin/forms/:id/versions/:versionId/restore", async (c) => {
   const id = c.req.param("id");
   const versionId = Number(c.req.param("versionId"));
-  const form = await getForm(c.env.DB, id);
+  const form = await getFormInWorkspace(c.env.DB, id, wsOf(c));
   if (!form || !Number.isInteger(versionId)) return c.notFound();
   await createFormVersion(c.env.DB, id, form.schema_json ?? "{}", form.published_json, "pre-restore");
   const restored = await restoreFormVersion(c.env.DB, id, versionId);
@@ -1903,7 +1936,7 @@ app.post("/admin/forms/:id/versions/:versionId/restore", async (c) => {
 
 app.post("/admin/forms/:id/schema", async (c) => {
   const id = c.req.param("id");
-  const form = await getForm(c.env.DB, id);
+  const form = await getFormInWorkspace(c.env.DB, id, wsOf(c));
   if (!form) return c.notFound();
   const body = await c.req.parseBody();
   const raw = String(body.schema_json ?? "");
@@ -1920,7 +1953,7 @@ app.post("/admin/forms/:id/schema", async (c) => {
 
 app.post("/admin/forms/:id/publish", async (c) => {
   const id = c.req.param("id");
-  const form = await getForm(c.env.DB, id);
+  const form = await getFormInWorkspace(c.env.DB, id, wsOf(c));
   if (!form) return c.notFound();
   const draft = parseSchema(form.schema_json);
   if (draft && isSchemaV2(draft)) {
@@ -1934,7 +1967,7 @@ app.post("/admin/forms/:id/publish", async (c) => {
 
 app.post("/admin/forms/:id/unpublish", async (c) => {
   const id = c.req.param("id");
-  const form = await getForm(c.env.DB, id);
+  const form = await getFormInWorkspace(c.env.DB, id, wsOf(c));
   if (!form) return c.notFound();
   await unpublishForm(c.env.DB, id);
   await audit(c.env.DB, "form.unpublished", id, "unpublished");
@@ -1943,7 +1976,7 @@ app.post("/admin/forms/:id/unpublish", async (c) => {
 
 app.get("/admin/forms/:id", async (c) => {
   const url = new URL(c.req.url);
-  const form = await getForm(c.env.DB, c.req.param("id"));
+  const form = await getFormInWorkspace(c.env.DB, c.req.param("id"), wsOf(c));
   if (!form) return c.notFound();
   const tabParam = url.searchParams.get("tab");
   if (tabParam === "build") {
@@ -1971,7 +2004,7 @@ app.get("/admin/forms/:id", async (c) => {
       webhooks={hooks}
       origin={originOf(c.req.url)}
       created={url.searchParams.get("created") === "1"}
-      hasEmailProvider={!!c.env.RESEND_API_KEY}
+      hasEmailProvider={!!selectProvider(c.env)}
       toastMsg={msgFrom(c)}
       commands={baseCommands(originOf(c.req.url))}
       formCount={stats.form_count}
@@ -1998,7 +2031,7 @@ app.post("/admin/forms/:id/settings", async (c) => {
 
 app.post("/admin/forms/:id/share", async (c) => {
   const id = c.req.param("id");
-  const form = await getForm(c.env.DB, id);
+  const form = await getFormInWorkspace(c.env.DB, id, wsOf(c));
   if (!form) return c.notFound();
   const body = await c.req.parseBody();
   const slug = String(body.slug ?? "").trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
@@ -2022,7 +2055,7 @@ function safeThemeUrl(value: unknown): string {
 
 app.post("/admin/forms/:id/theme", async (c) => {
   const id = c.req.param("id");
-  if (!await getForm(c.env.DB, id)) return c.notFound();
+  if (!await getFormInWorkspace(c.env.DB, id, wsOf(c))) return c.notFound();
   const body = await c.req.parseBody();
   const radius = Number(body.radius);
   const theme = { background: String(body.background ?? "").trim().slice(0, 40), text: String(body.text ?? "").trim().slice(0, 40), button: String(body.button ?? "").trim().slice(0, 40), radius: Number.isFinite(radius) ? Math.max(0, Math.min(32, radius)) : 10, logo: safeThemeUrl(body.logo), cover: safeThemeUrl(body.cover) };
@@ -2032,7 +2065,7 @@ app.post("/admin/forms/:id/theme", async (c) => {
 });
 
 app.post("/admin/forms/:id/duplicate", async (c) => {
-  const form = await getForm(c.env.DB, c.req.param("id"));
+  const form = await getFormInWorkspace(c.env.DB, c.req.param("id"), wsOf(c));
   if (!form) return c.notFound();
   const copy = await duplicateForm(c.env.DB, form);
   await audit(c.env.DB, "form.created", copy.id, `duplicated from ${form.id}`);
@@ -2061,21 +2094,21 @@ app.post("/admin/forms/:id/delete", async (c) => {
 });
 
 app.get("/admin/forms/:id/export.json", async (c) => {
-  const form = await getForm(c.env.DB, c.req.param("id"));
+  const form = await getFormInWorkspace(c.env.DB, c.req.param("id"), wsOf(c));
   if (!form) return c.notFound();
   const subs = await listSubmissionsForForm(c.env.DB, form.id, { limit: 5000 });
   return new Response(JSON.stringify({ form: { id: form.id, name: form.name }, responses: subs }), { headers: { "content-type": "application/json; charset=utf-8", "content-disposition": `attachment; filename="${form.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-submissions.json"` } });
 });
 
 app.get("/admin/forms/:id/export", async (c) => {
-  const form = await getForm(c.env.DB, c.req.param("id"));
+  const form = await getFormInWorkspace(c.env.DB, c.req.param("id"), wsOf(c));
   if (!form) return c.notFound();
   const subs = await listSubmissionsForForm(c.env.DB, form.id, { limit: 5000 });
   return exportCsv(form, subs);
 });
 
 app.get("/admin/forms/:id/qr", async (c) => {
-  const form = await getForm(c.env.DB, c.req.param("id"));
+  const form = await getFormInWorkspace(c.env.DB, c.req.param("id"), wsOf(c));
   if (!form) return c.notFound();
   const origin = originOf(c.req.url);
   const publicUrl = `${origin}/f/${form.slug || form.id}`;
@@ -2125,7 +2158,7 @@ app.get("/admin/submissions", async (c) => {
   const [subs, total, forms] = await Promise.all([
     listSubmissions(c.env.DB, { formId, spamOnly, page }),
     countSubmissions(c.env.DB, { formId, spamOnly }),
-    listForms(c.env.DB),
+    listForms(c.env.DB, wsOf(c)),
   ]);
   const stats = await getDashboardStats(c.env.DB);
   return c.html(
@@ -2164,7 +2197,12 @@ app.get("/admin/submissions/:id", async (c) => {
   // Field-level access control: strip values this viewer is not entitled to see before
   // the page is rendered, so a redacted field never reaches the browser at all.
   const viewer = await currentActor(c);
-  const parentForm = sub.form_id ? await getForm(c.env.DB, sub.form_id) : null;
+  const parentForm = sub.form_id ? await getFormInWorkspace(c.env.DB, sub.form_id, wsOf(c)) : null;
+  // The submission was fetched by id, which is not workspace-scoped. Without this the page
+  // would render a foreign tenant's response in full: a null parent form skips both the
+  // field ACL below and the seal check further down, so the leak was worse than partial.
+  // A submission with no form_id predates form linkage and has no workspace to test.
+  if (sub.form_id && !parentForm) return c.notFound();
   const acl = parseFieldAcl(parentForm?.field_acl_json);
   if (Object.keys(acl).length > 0 && viewer.role !== "owner") {
     try {
@@ -2261,7 +2299,7 @@ app.post("/admin/submissions/bulk", async (c) => {
 app.get("/admin/webhooks", async (c) => {
   const [hooks, forms, stats] = await Promise.all([
     listWebhooks(c.env.DB),
-    listForms(c.env.DB),
+    listForms(c.env.DB, wsOf(c)),
     getDashboardStats(c.env.DB),
   ]);
   const lastMap = new Map<string, { at: number; ok: boolean }>();
@@ -2351,7 +2389,7 @@ app.post("/admin/webhooks/:id/rotate-secret", async (c) => {
 /* ---------- workflows / files ---------- */
 
 app.get("/admin/workflows", async (c) => {
-  const [stats, workflows, forms] = await Promise.all([getDashboardStats(c.env.DB), listWorkflows(c.env.DB), listForms(c.env.DB)]);
+  const [stats, workflows, forms] = await Promise.all([getDashboardStats(c.env.DB), listWorkflows(c.env.DB), listForms(c.env.DB, wsOf(c))]);
   const runPairs = await Promise.all(workflows.map(async (workflow) => [workflow.id, await listWorkflowRuns(c.env.DB, workflow.id)] as const));
   return c.html(<WorkflowsPage path="/admin/workflows" workflows={workflows} forms={forms} runs={Object.fromEntries(runPairs)} toastMsg={msgFrom(c)} commands={baseCommands(originOf(c.req.url))} formCount={stats.form_count} submissionCount={stats.submission_count} />);
 });
@@ -2361,7 +2399,7 @@ app.post("/admin/workflows", async (c) => {
   const name = String(body.name ?? "").trim();
   if (!name) return c.redirect("/admin/workflows?msg=Workflow+name+required");
   const formId = String(body.form_id ?? "").trim() || null;
-  if (formId && !await getForm(c.env.DB, formId)) return c.redirect("/admin/workflows?msg=Unknown+form");
+  if (formId && !await getFormInWorkspace(c.env.DB, formId, wsOf(c))) return c.redirect("/admin/workflows?msg=Unknown+form");
   const conditionField = String(body.condition_field ?? "").trim();
   const conditionJson = conditionField ? JSON.stringify([{ field: conditionField, operator: String(body.condition_operator ?? "equals"), value: String(body.condition_value ?? "") }]) : "[]";
   const actionType = String(body.action_type ?? "notify");
@@ -2391,7 +2429,7 @@ app.post("/admin/workflows/:id/replay", async (c) => {
   const body = await c.req.parseBody();
   const submissionId = Number(body.submission_id);
   const submission = Number.isInteger(submissionId) ? await getSubmission(c.env.DB, submissionId) : null;
-  const form = submission ? await getForm(c.env.DB, workflow?.form_id || submission.form_id) : null;
+  const form = submission ? await getFormInWorkspace(c.env.DB, workflow?.form_id || submission.form_id, wsOf(c)) : null;
   if (!workflow || !submission || !form) return c.redirect("/admin/workflows?msg=Replay+target+not+found");
   let data: Record<string, string> = {};
   try { const parsed = JSON.parse(submission.data) as Record<string, unknown>; data = Object.fromEntries(Object.entries(parsed).map(([key, value]) => [key, Array.isArray(value) ? value.map(String).join(", ") : String(value ?? "")])); } catch { return c.redirect("/admin/workflows?msg=Replay+data+invalid"); }
@@ -2464,10 +2502,10 @@ app.get("/admin/settings", async (c) => {
     : "general";
   const [stats, forms, retentionDays, apiKeys, members, allowedDomains] = await Promise.all([
     getDashboardStats(c.env.DB),
-    listForms(c.env.DB),
+    listForms(c.env.DB, wsOf(c)),
     getSetting(c.env.DB, "retention_days"),
     listApiKeys(c.env.DB),
-    listWorkspaceMembers(c.env.DB),
+    listWorkspaceMembers(c.env.DB, wsOf(c)),
     getAllowedDomains(c.env.DB),
   ]);
   const createdKey = url.searchParams.get("createdKey") || undefined;
@@ -2532,15 +2570,27 @@ app.post("/admin/settings/members/invite", async (c) => {
   const role = body.role === "viewer" ? "viewer" : "editor";
   if (!/^\S+@\S+\.\S+$/.test(email)) return c.redirect("/admin/settings?section=members&msg=Valid+email+required");
   const token = newResumeToken();
-  await createInvitation(c.env.DB, email, role, await sha256Hex(token), Date.now() + 7 * 24 * 60 * 60 * 1000);
+  await createInvitation(c.env.DB, email, role, await sha256Hex(token), Date.now() + 7 * 24 * 60 * 60 * 1000, wsOf(c));
   await audit(c.env.DB, "membership.invited", email, role);
   return c.redirect(`/admin/settings?section=members&invite=${encodeURIComponent(`${originOf(c.req.url)}/invite/${token}`)}&msg=Invitation+created`);
 });
 
 app.post("/admin/settings/members/:id/remove", async (c) => {
-  await deleteMembership(c.env.DB, c.req.param("id"));
+  await deleteMembership(c.env.DB, c.req.param("id"), wsOf(c));
   await audit(c.env.DB, "membership.removed", c.req.param("id"), "removed");
   return c.redirect("/admin/settings?section=members&msg=Member+removed");
+});
+
+app.post("/admin/settings/members/:id/transfer", async (c) => {
+  // Owner-only is already enforced for /admin/settings/members/* by the admin middleware;
+  // transferOwnership re-checks the actor's role against the database rather than trusting
+  // that, because this is the one action that can strip the caller's own privileges.
+  const actor = await currentActor(c);
+  const target = c.req.param("id");
+  const ok = await transferOwnership(c.env.DB, wsOf(c), actor.id, target);
+  if (!ok) return c.redirect("/admin/settings?section=members&msg=Ownership+transfer+refused");
+  await audit(c.env.DB, "membership.ownership_transferred", target, `from ${actor.id}`);
+  return c.redirect("/admin/settings?section=members&msg=Ownership+transferred");
 });
 
 app.post("/admin/api-keys", async (c) => {
@@ -2729,6 +2779,9 @@ app.notFound((c) => {
 export default {
   fetch: app.fetch,
   async scheduled(_event: ScheduledEvent, env: Bindings, ctx: ExecutionContext): Promise<void> {
+    // The scheduled handler bypasses the middleware chain, so it must bind the database
+    // itself or the sweeps would run against an undefined D1 binding under Postgres.
+    env.DB = resolveDatabase(env);
     ctx.waitUntil(
       (async () => {
         try {
@@ -2740,6 +2793,13 @@ export default {
           }
         } catch (e) {
           console.error("webhook sweep failed:", e instanceof Error ? e.stack ?? e.message : String(e));
+        }
+        // Closed rate-limit windows are dead weight; without this the table keeps one row
+        // per caller forever. Separate try so a failure here cannot skip the retry sweep.
+        try {
+          await sweepRateCounters(env.DB, RATE_WINDOW_MS);
+        } catch (e) {
+          console.error("rate counter sweep failed:", e instanceof Error ? e.stack ?? e.message : String(e));
         }
       })()
     );

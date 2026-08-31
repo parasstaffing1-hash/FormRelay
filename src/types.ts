@@ -1,8 +1,35 @@
 export type Bindings = {
+  /**
+   * Reassigned per request by the `/*` middleware in index.tsx when Postgres is configured,
+   * so every downstream `env.DB` call site is engine-agnostic. See `dbconnect.ts`.
+   */
   DB: D1Database;
+  /** Cloudflare Hyperdrive binding pooling connections to Postgres. Preferred over DATABASE_URL. */
+  HYPERDRIVE?: { connectionString: string };
+  /** Direct Postgres connection string. Local development, or deployments without Hyperdrive. */
+  DATABASE_URL?: string;
   ADMIN_PASSWORD: string;
   SESSION_SECRET: string;
+  /** Resend API key. Optional — only one email provider needs configuring. */
   RESEND_API_KEY?: string;
+  /** Full SendLayer POST endpoint, normally https://api.example.com/v1/emails. */
+  SENDLAYER_API_URL?: string;
+  /** Server-side SendLayer project API key. Never expose this in browser code. */
+  SENDLAYER_API_KEY?: string;
+  /**
+   * Generic JSON email endpoint, used by any provider that is not Resend (SendLayer,
+   * Postmark, Mailgun, a self-hosted relay). Takes precedence over RESEND_API_KEY.
+   * See `httpProvider` in email.ts for the request shape.
+   */
+  EMAIL_API_URL?: string;
+  /** Bearer token for EMAIL_API_URL. */
+  EMAIL_API_KEY?: string;
+  /** Force a provider ("http" | "resend") instead of inferring from what is configured. */
+  EMAIL_PROVIDER?: string;
+  /**
+   * Sender identity, e.g. `FormRelay <forms@yourdomain.com>`. Required for every provider
+   * except Resend, which has a sandbox sender to fall back on.
+   */
   MAIL_FROM?: string;
   TURNSTILE_SECRET_KEY?: string;
   WORKSPACE_NAME?: string;
@@ -43,6 +70,7 @@ export type FormRow = {
   unlock_at?: number | null;
   spam_rules_json?: string;
   score_rules_json?: string;
+  workspace_id?: string;
 };
 
 export type SubmissionStatus = "in_progress" | "partial" | "completed" | "abandoned" | "spam" | "deleted";

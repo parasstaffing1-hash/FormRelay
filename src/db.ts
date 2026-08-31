@@ -19,11 +19,18 @@ function randomSecret(): string {
   return "whsec_" + randomId(32);
 }
 
+/**
+ * The bootstrap workspace. Installs that predate memberships have every row defaulted to
+ * this id, so it is the fallback for the legacy password-only session which carries no
+ * workspace of its own.
+ */
+export const DEFAULT_WORKSPACE = "ws_default";
+
 /* ================= forms ================= */
 
 export async function createForm(
   db: D1Database,
-  fields: { name: string; redirect_url?: string; notify_email?: string; schemaJson?: string | null; slug?: string | null }
+  fields: { name: string; redirect_url?: string; notify_email?: string; schemaJson?: string | null; slug?: string | null; workspaceId?: string }
 ): Promise<FormRow> {
   const row: FormRow = {
     id: randomId(10),
@@ -44,16 +51,22 @@ export async function createForm(
     submission_limit: null,
     closed_message: "",
     one_per_respondent: 0,
+    workspace_id: fields.workspaceId ?? DEFAULT_WORKSPACE,
   };
   await db
-    .prepare("INSERT INTO forms (id, name, redirect_url, notify_email, auto_reply, archived, schema_json, published_json, status, views, created_at, slug, theme_json, open_at, close_at, submission_limit, closed_message, one_per_respondent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-    .bind(row.id, row.name, row.redirect_url, row.notify_email, row.auto_reply, row.archived, row.schema_json, row.published_json, row.status, row.views, row.created_at, row.slug ?? null, row.theme_json ?? null, row.open_at ?? null, row.close_at ?? null, row.submission_limit ?? null, row.closed_message ?? "", row.one_per_respondent ?? 0)
+    .prepare("INSERT INTO forms (id, name, redirect_url, notify_email, auto_reply, archived, schema_json, published_json, status, views, created_at, slug, theme_json, open_at, close_at, submission_limit, closed_message, one_per_respondent, workspace_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .bind(row.id, row.name, row.redirect_url, row.notify_email, row.auto_reply, row.archived, row.schema_json, row.published_json, row.status, row.views, row.created_at, row.slug ?? null, row.theme_json ?? null, row.open_at ?? null, row.close_at ?? null, row.submission_limit ?? null, row.closed_message ?? "", row.one_per_respondent ?? 0, row.workspace_id ?? DEFAULT_WORKSPACE)
     .run();
   return row;
 }
 
 export async function duplicateForm(db: D1Database, source: FormRow): Promise<FormRow> {
-  return createForm(db, { name: `${source.name} (copy)`, redirect_url: source.redirect_url, schemaJson: source.schema_json });
+  return createForm(db, {
+    name: `${source.name} (copy)`,
+    redirect_url: source.redirect_url,
+    schemaJson: source.schema_json,
+    workspaceId: source.workspace_id ?? DEFAULT_WORKSPACE,
+  });
 }
 
 export async function getFormBySlug(db: D1Database, slug: string): Promise<FormRow | null> {
@@ -152,13 +165,17 @@ export function isOriginAllowed(originOrReferer: string | null | undefined, conf
   }
 }
 
-export async function listForms(db: D1Database): Promise<FormRow[]> {
-  const { results } = await db.prepare("SELECT * FROM forms ORDER BY created_at DESC").all<FormRow>();
+export async function listForms(db: D1Database, workspaceId: string = DEFAULT_WORKSPACE): Promise<FormRow[]> {
+  const { results } = await db
+    .prepare("SELECT * FROM forms WHERE workspace_id = ? ORDER BY created_at DESC")
+    .bind(workspaceId)
+    .all<FormRow>();
   return results ?? [];
 }
 
-export async function listFormsWithStats(db: D1Database, q?: string): Promise<FormWithStats[]> {
-  const filter = q ? "WHERE f.name LIKE ?" : "";
+export async function listFormsWithStats(db: D1Database, q?: string, workspaceId: string = DEFAULT_WORKSPACE): Promise<FormWithStats[]> {
+  // The workspace predicate is unconditional; the search term only ever narrows it further.
+  const filter = q ? "WHERE f.workspace_id = ? AND f.name LIKE ?" : "WHERE f.workspace_id = ?";
   const { results } = await db
     .prepare(
       `SELECT f.*, COUNT(s.id) AS submission_count, MAX(s.created_at) AS last_submission_at
@@ -166,13 +183,30 @@ export async function listFormsWithStats(db: D1Database, q?: string): Promise<Fo
        ${filter}
        GROUP BY f.id ORDER BY f.created_at DESC`
     )
-    .bind(...(q ? [`%${q}%`] : []))
+    .bind(...(q ? [workspaceId, `%${q}%`] : [workspaceId]))
     .all<FormWithStats>();
   return results ?? [];
 }
 
+/**
+ * Unscoped form read. Correct for the *public* surface — `/f/:id`, `/s/:slug` and receipt
+ * links are reached by anonymous visitors who have no workspace — and wrong everywhere an
+ * operator is acting. Admin routes must use `getFormInWorkspace`.
+ */
 export async function getForm(db: D1Database, id: string): Promise<FormRow | null> {
   return await db.prepare("SELECT * FROM forms WHERE id = ?").bind(id).first<FormRow>();
+}
+
+/**
+ * Form read scoped to one workspace.
+ *
+ * The workspace predicate is in the SQL rather than a check on the returned row, so a form
+ * belonging to another tenant is indistinguishable from one that does not exist. Callers
+ * get `null` and render their ordinary 404, which keeps form ids from being probed for
+ * existence across workspaces.
+ */
+export async function getFormInWorkspace(db: D1Database, id: string, workspaceId: string): Promise<FormRow | null> {
+  return await db.prepare("SELECT * FROM forms WHERE id = ? AND workspace_id = ?").bind(id, workspaceId).first<FormRow>();
 }
 
 export async function updateForm(
@@ -805,12 +839,12 @@ export async function getUserByEmail(db: D1Database, email: string): Promise<Use
   return await db.prepare("SELECT * FROM users WHERE lower(email) = lower(?)").bind(email).first<UserRow>();
 }
 
-export async function listWorkspaceMembers(db: D1Database, workspaceId = "ws_default"): Promise<(UserRow & { role: string })[]> {
+export async function listWorkspaceMembers(db: D1Database, workspaceId = DEFAULT_WORKSPACE): Promise<(UserRow & { role: string })[]> {
   const { results } = await db.prepare("SELECT u.*, m.role FROM users u JOIN memberships m ON m.user_id = u.id WHERE m.workspace_id = ? ORDER BY u.created_at").bind(workspaceId).all<UserRow & { role: string }>();
   return results ?? [];
 }
 
-export async function createInvitation(db: D1Database, email: string, role: "editor" | "viewer", tokenHash: string, expiresAt: number, workspaceId = "ws_default"): Promise<InvitationRow> {
+export async function createInvitation(db: D1Database, email: string, role: "editor" | "viewer", tokenHash: string, expiresAt: number, workspaceId = DEFAULT_WORKSPACE): Promise<InvitationRow> {
   const row: InvitationRow = { id: `inv_${randomId(12)}`, workspace_id: workspaceId, email, role, token_hash: tokenHash, expires_at: expiresAt, accepted_at: null, created_at: Date.now() };
   await db.prepare("INSERT INTO invitations (id, workspace_id, email, role, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(row.id, row.workspace_id, row.email, row.role, row.token_hash, row.expires_at, row.created_at).run();
   return row;
@@ -824,13 +858,52 @@ export async function acceptInvitation(db: D1Database, invitation: InvitationRow
   const existing = await getUserByEmail(db, invitation.email);
   const user = existing ?? { id: `usr_${randomId(12)}`, email: invitation.email, name, password_hash: passwordHash, created_at: Date.now() };
   if (!existing) await db.prepare("INSERT INTO users (id, email, name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)").bind(user.id, user.email, user.name, user.password_hash, user.created_at).run();
-  await db.prepare("INSERT OR REPLACE INTO memberships (user_id, workspace_id, role, created_at) VALUES (?, ?, ?, ?)").bind(user.id, invitation.workspace_id, invitation.role, Date.now()).run();
+  // Upsert spelled with an explicit conflict target rather than INSERT OR REPLACE. Two
+  // reasons: this syntax is valid in both SQLite and Postgres, and OR REPLACE deletes the
+  // existing row before inserting — which resets any column not named here. DO UPDATE
+  // touches only the columns listed.
+  await db
+    .prepare(
+      `INSERT INTO memberships (user_id, workspace_id, role, created_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(user_id, workspace_id) DO UPDATE SET role = excluded.role, created_at = excluded.created_at`
+    )
+    .bind(user.id, invitation.workspace_id, invitation.role, Date.now())
+    .run();
   await db.prepare("UPDATE invitations SET accepted_at = ? WHERE id = ? AND accepted_at IS NULL").bind(Date.now(), invitation.id).run();
   return user;
 }
 
-export async function deleteMembership(db: D1Database, userId: string, workspaceId = "ws_default"): Promise<void> {
+export async function deleteMembership(db: D1Database, userId: string, workspaceId = DEFAULT_WORKSPACE): Promise<void> {
   await db.prepare("DELETE FROM memberships WHERE user_id = ? AND workspace_id = ? AND role != 'owner'").bind(userId, workspaceId).run();
+}
+
+/**
+ * Hands workspace ownership from one member to another.
+ *
+ * `deleteMembership` refuses to remove an owner, so without a transfer path an owner is
+ * permanent and a workspace whose owner leaves is unadministrable. The two role writes go
+ * through `db.batch`, which D1 runs as one transaction: a partial apply would otherwise
+ * leave the workspace with two owners or — worse, and unrecoverable through the UI — none.
+ *
+ * Returns false without writing when the target is not already a member of this workspace,
+ * so ownership cannot be pushed onto an outsider or onto a member of another tenant.
+ */
+export async function transferOwnership(
+  db: D1Database,
+  workspaceId: string,
+  fromUserId: string,
+  toUserId: string
+): Promise<boolean> {
+  if (fromUserId === toUserId) return false;
+  const target = await getMembership(db, toUserId, workspaceId);
+  if (!target) return false;
+  const current = await getMembership(db, fromUserId, workspaceId);
+  if (!current || current.role !== "owner") return false;
+  await db.batch([
+    db.prepare("UPDATE memberships SET role = 'owner' WHERE user_id = ? AND workspace_id = ?").bind(toUserId, workspaceId),
+    db.prepare("UPDATE memberships SET role = 'editor' WHERE user_id = ? AND workspace_id = ?").bind(fromUserId, workspaceId),
+  ]);
+  return true;
 }
 
 export async function getMembership(db: D1Database, userId: string, workspaceId: string): Promise<MembershipRow | null> {

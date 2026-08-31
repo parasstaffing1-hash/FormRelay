@@ -241,8 +241,8 @@ export const SettingsPage: FC<{
               <p class="desc">Invite teammates with editor or viewer access.</p>
               {inviteUrl ? <div class="callout mb16"><div><strong>Invite link — copy it now</strong><div class="mono small" style="word-break:break-all;margin-top:6px">{inviteUrl}</div></div></div> : null}
               <form method="post" action="/admin/settings/members/invite" class="card card-b flex gap8" style="align-items:flex-end;flex-wrap:wrap"><div class="field" style="margin:0;flex:1;min-width:220px"><label for="member-email">Email</label><input class="input" id="member-email" type="email" name="email" required /></div><div class="field" style="margin:0;min-width:150px"><label for="member-role">Role</label><select class="select" id="member-role" name="role"><option value="editor">Editor</option><option value="viewer">Viewer</option></select></div><Button variant="primary" type="submit">Create invite</Button></form>
-              <div class="card mt16">{members.length ? members.map((member) => <div class="list-item between"><span><span class="cell-main">{member.name}</span><span class="cell-sub">{member.email}</span></span><span class="flex gap8"><span class="badge badge-neutral">{member.role}</span>{member.role !== "owner" ? <form method="post" action={`/admin/settings/members/${member.id}/remove`} data-confirm="Remove this member?"><button class="btn btn-danger btn-sm" type="submit">Remove</button></form> : null}</span></div>) : <div class="card-b"><p class="small t2">No members found. The bootstrap owner is created on the next admin login.</p></div>}</div>
-              <p class="hint small t2 mt16">Invite links are single-use and expire after seven days. Share them through a trusted channel.</p>
+              <div class="card mt16">{members.length ? members.map((member) => <div class="list-item between"><span><span class="cell-main">{member.name}</span><span class="cell-sub">{member.email}</span></span><span class="flex gap8"><span class="badge badge-neutral">{member.role}</span>{member.role !== "owner" ? <form method="post" action={`/admin/settings/members/${member.id}/transfer`} data-confirm="Make this member the owner? You will become an editor and lose owner permissions."><button class="btn btn-secondary btn-sm" type="submit">Make owner</button></form> : null}{member.role !== "owner" ? <form method="post" action={`/admin/settings/members/${member.id}/remove`} data-confirm="Remove this member?"><button class="btn btn-danger btn-sm" type="submit">Remove</button></form> : null}</span></div>) : <div class="card-b"><p class="small t2">No members found. The bootstrap owner is created on the next admin login.</p></div>}</div>
+              <p class="hint small t2 mt16">Invite links are single-use and expire after seven days. Share them through a trusted channel. Transferring ownership demotes you to editor in the same step, so exactly one owner always remains.</p>
             </div>
           ) : null}
 
@@ -409,7 +409,7 @@ export const SettingsPage: FC<{
                 <p class="t2 small">Create a form first.</p>
               )}
               <p class="hint small t2 mt16">
-                Delivery requires the <code class="mono">RESEND_API_KEY</code> secret. Submissions are stored even when email fails.
+                Delivery requires a configured email provider. Submissions are stored even when email fails.
               </p>
             </div>
           ) : null}
