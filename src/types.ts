@@ -32,6 +32,10 @@ export type Bindings = {
    */
   MAIL_FROM?: string;
   TURNSTILE_SECRET_KEY?: string;
+  /** Public Turnstile site key rendered into visitor-facing forms. */
+  TURNSTILE_SITE_KEY?: string;
+  /** Comma-separated production/local hostnames accepted from Siteverify. */
+  TURNSTILE_HOSTNAMES?: string;
   WORKSPACE_NAME?: string;
   FILES?: R2Bucket;
   PREFILL_SECRET?: string;

@@ -3,13 +3,15 @@ import { countRecentByIp } from "./db";
 
 const RATE_LIMIT = 10;
 const RATE_WINDOW_MS = 60_000;
+const TURNSTILE_ACTION = "form-submit";
 
 export type SpamVerdict = { spam: boolean; reason: string };
 
 export async function checkSpam(
   env: Bindings,
   data: Record<string, string>,
-  ip: string
+  ip: string,
+  requestHostname = "",
 ): Promise<SpamVerdict> {
   const honeypot = data._gotcha ?? data._honeypot ?? data._hp ?? "";
   if (honeypot.trim() !== "") {
@@ -23,13 +25,32 @@ export async function checkSpam(
 
   if (env.TURNSTILE_SECRET_KEY) {
     const token = data["cf-turnstile-response"] ?? "";
+    const expectedHostnames = new Set(
+      (env.TURNSTILE_HOSTNAMES ?? "")
+        .split(",")
+        .map((hostname) => hostname.trim().toLowerCase())
+        .filter(Boolean),
+    );
+    if (!token || token.length > 2048 || expectedHostnames.size === 0) {
+      throw new Error("Turnstile is enabled but the token or hostname allowlist is missing");
+    }
     const res = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ secret: env.TURNSTILE_SECRET_KEY, response: token }).toString(),
+      body: new URLSearchParams({
+        secret: env.TURNSTILE_SECRET_KEY,
+        response: token,
+        remoteip: ip,
+      }).toString(),
     });
-    const result = (await res.json()) as { success: boolean };
-    if (!result.success) {
+    if (!res.ok) throw new Error("Turnstile siteverify returned HTTP " + res.status);
+    const result = (await res.json()) as { success?: boolean; action?: string; hostname?: string };
+    if (
+      result.success !== true ||
+      result.action !== TURNSTILE_ACTION ||
+      !expectedHostnames.has((result.hostname ?? "").toLowerCase()) ||
+      (requestHostname !== "" && !expectedHostnames.has(requestHostname.toLowerCase()))
+    ) {
       return { spam: true, reason: "captcha" };
     }
   }
