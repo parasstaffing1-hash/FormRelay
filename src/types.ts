@@ -178,7 +178,18 @@ export type WorkflowRow = { id: string; form_id: string | null; name: string; tr
 export type WorkflowRunRow = { id: string; workflow_id: string; submission_id: number | null; status: "running" | "succeeded" | "failed" | string; started_at: number; finished_at: number | null; error: string };
 export type WorkflowStepRow = { id: number; run_id: string; step_index: number; action_type: string; status: string; detail: string; started_at: number; finished_at: number | null; retry_count: number };
 export type NotificationRow = { id: number; kind: string; title: string; detail: string; read_at: number | null; created_at: number };
-export type UserRow = { id: string; email: string; name: string; password_hash: string; created_at: number };
+export type UserRow = {
+  id: string;
+  email: string;
+  name: string;
+  password_hash: string;
+  created_at: number;
+  /** TOTP secret in base32. Present once enrolment starts, whether or not it completed. */
+  totp_secret?: string | null;
+  /** 1 only after the user has proved they can generate a code from the secret. */
+  totp_enabled?: number;
+  totp_enrolled_at?: number | null;
+};
 export type MembershipRow = { user_id: string; workspace_id: string; role: "owner" | "editor" | "viewer" | string; created_at: number };
 export type InvitationRow = { id: string; workspace_id: string; email: string; role: "editor" | "viewer" | string; token_hash: string; expires_at: number; accepted_at: number | null; created_at: number };
 

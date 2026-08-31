@@ -125,3 +125,26 @@ test('batch runs inside a transaction, preserving the atomicity ownership transf
   assert.equal(out.length, 2);
   assert.equal(client.sent.length, 3);
 });
+
+/* ---------- integer flags ---------- */
+
+test('a zero flag must not arrive as the truthy string "0"', async () => {
+  // This is the shape of a real bug: totp_enabled is BIGINT, postgres.js returns int8 as
+  // a string by default, and "0" is truthy in JS -- so a disabled second factor read as
+  // enabled and locked the user out. The fix parses int8 at the type level; coerceRow is
+  // the second line of defence for anything that still arrives as a bigint object.
+  const { coerceRow } = require('../.test-build/pgdialect.js');
+  assert.equal(coerceRow({ totp_enabled: 0n }).totp_enabled, 0);
+  assert.equal(Boolean(coerceRow({ totp_enabled: 0n }).totp_enabled), false);
+  assert.equal(coerceRow({ totp_enabled: 1n }).totp_enabled, 1);
+});
+
+test('the driver config parses int8 as a number, not a string', () => {
+  // Guards the config itself: if the types override is dropped from dbconnect.ts, every
+  // 0/1 flag silently becomes truthy again.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'dbconnect.ts'), 'utf8');
+  assert.match(src, /bigint:\s*\{/, 'dbconnect must override int8 parsing');
+  assert.match(src, /parse:\s*\(value: string\) => Number\(value\)/, 'int8 must parse to Number');
+});

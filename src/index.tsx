@@ -52,6 +52,13 @@ import {
   getFormBySlug,
   getFormInWorkspace,
   transferOwnership,
+  getUserById,
+  setUserTotpSecret,
+  enableUserTotp,
+  disableUserTotp,
+  storeRecoveryCodes,
+  countUnusedRecoveryCodes,
+  consumeRecoveryCode,
   DEFAULT_WORKSPACE,
   updateFormShare,
   updateFormTheme,
@@ -143,7 +150,15 @@ import { audit } from "./audit";
 import { sendNotification, sendAutoReply, selectProvider, EmailDeliveryError } from "./email";
 import { checkSpam, normalizePayload } from "./spam";
 import { deliverSubmission, sendTestWebhook, sweepRetries } from "./webhooks";
+import { TwoFactorPage } from "./pages/two-factor";
 import { sweepRateCounters } from "./ratelimit";
+import {
+  verify as verifyTotp,
+  generateSecret,
+  otpauthUri,
+  generateRecoveryCodes,
+  normaliseRecoveryCode,
+} from "./totp";
 import { resolveDatabase } from "./dbconnect";
 
 /** Must match the API limiter window in `api.ts`, or the sweep would delete live windows. */
@@ -203,7 +218,7 @@ async function contentSecurityPolicy(): Promise<string> {
         "style-src 'self' 'unsafe-inline'",
         "font-src 'self'",
         "img-src 'self' https: data:",
-        `script-src 'self' 'sha256-${hash}'`,
+        `script-src 'self' https://challenges.cloudflare.com 'sha256-${hash}'`,
         "connect-src 'self' https:",
         "frame-src 'self' https:",
         "base-uri 'self'",
@@ -251,6 +266,32 @@ async function verifySessionToken(token: string | undefined, secret: string): Pr
   const sig = token.slice(dot + 1);
   if (!(await hmacVerify(exp, sig, secret))) return false;
   return Number(exp) > Date.now();
+}
+
+/**
+ * Proof that the password step succeeded, pending a second factor.
+ *
+ * Deliberately not a session: it is namespaced with its own prefix so it can never be
+ * accepted as one, and it lives for five minutes rather than the session lifetime. Holding
+ * it grants nothing except the right to submit a TOTP code for that user.
+ */
+const PENDING_2FA_TTL_MS = 5 * 60 * 1000;
+const PENDING_2FA_COOKIE = "fr_2fa";
+
+async function makePending2faToken(userId: string, workspaceId: string, secret: string): Promise<string> {
+  const payload = `2fa.${userId}.${workspaceId}.${Date.now() + PENDING_2FA_TTL_MS}`;
+  return `${payload}.${await hmacSign(payload, secret)}`;
+}
+
+async function readPending2faToken(token: string | undefined, secret: string): Promise<{ userId: string; workspaceId: string } | null> {
+  if (!token) return null;
+  const parts = token.split(".");
+  if (parts.length !== 5 || parts[0] !== "2fa") return null;
+  const [, userId, workspaceId, exp, sig] = parts as [string, string, string, string, string];
+  const payload = `2fa.${userId}.${workspaceId}.${exp}`;
+  if (!(await hmacVerify(payload, sig, secret))) return null;
+  if (Number(exp) <= Date.now()) return null;
+  return { userId, workspaceId };
 }
 
 async function makeUserSessionToken(userId: string, workspaceId: string, secret: string): Promise<string> {
@@ -440,7 +481,7 @@ function baseCommands(origin: string): CommandItem[] {
 
 const JS_HEADERS = { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" };
 
-// Served as files rather than inlined so the CSP can keep script-src at 'self'.
+// Served as files rather than inlined so the CSP can keep our own script-src hash stable.
 app.get("/assets/app.js", () => new Response(CLIENT_JS_WITH_GUARDS + PALETTE_WIRE, { headers: JS_HEADERS }));
 app.get("/assets/builder.js", () => new Response(BUILDER_JS, { headers: JS_HEADERS }));
 app.get("/assets/form-runtime.js", () => new Response(FORM_RUNTIME_JS, { headers: JS_HEADERS }));
@@ -692,7 +733,7 @@ app.post("/f/:id", async (c) => {
     if (Object.keys(errors).length > 0) {
       const origin = originOf(c.req.url);
       c.status(400);
-      return c.html(<PublicFormPage form={form} schema={schema} origin={origin} errors={errors} values={values} />);
+      return c.html(<PublicFormPage form={form} schema={schema} origin={origin} errors={errors} values={values} turnstileSiteKey={c.env.TURNSTILE_SITE_KEY} />);
     }
     const labels: Record<string, string> = {};
     const stored: Record<string, unknown> = {};
@@ -904,7 +945,7 @@ app.post("/f/:id", async (c) => {
         try {
           const outcome = await run;
           if (outcome.sent) {
-            if (subId !== null) await recordEvent(c.env.DB, subId, kind, "ok", `delivered via ${outcome.result?.provider ?? "provider"}`);
+            if (subId !== null) await recordEvent(c.env.DB, subId, kind, "ok", `accepted by ${outcome.result?.provider ?? "provider"}`);
             await recordEmailDelivery(c.env.DB, {
               submissionId: subId, formId: f.id, kind, recipient: recipient ?? "",
               provider: outcome.result?.provider ?? "", status: "sent",
@@ -1041,7 +1082,7 @@ app.post("/f/:id", async (c) => {
         });
         if (submissionId !== null) {
           await recordEvent(c.env.DB, submissionId, kind, outcome.sent ? "ok" : "skipped",
-            outcome.sent ? `delivered via ${outcome.result?.provider ?? "provider"}` : (outcome.skipped ?? "not sent"));
+            outcome.sent ? `accepted by ${outcome.result?.provider ?? "provider"}` : (outcome.skipped ?? "not sent"));
         }
       } catch (error) {
         const result = error instanceof EmailDeliveryError ? error.result : null;
@@ -1123,7 +1164,7 @@ app.get("/f/:id", async (c) => {
     powChallenge: powBits > 0 ? await issuePowChallenge(form.id, trustSecret) : "",
     powBits,
   };
-  return c.html(<PublicFormPage form={form} schema={schema} origin={origin} values={values} trust={trust} />);
+  return c.html(<PublicFormPage form={form} schema={schema} origin={origin} values={values} trust={trust} turnstileSiteKey={c.env.TURNSTILE_SITE_KEY} />);
 });
 
 /* ---------- auth ---------- */
@@ -1147,6 +1188,19 @@ app.post("/admin/login", async (c) => {
       if (ok) {
         // Silently migrate legacy unsalted SHA-256 digests to PBKDF2 on first successful login.
         if (needsUpgrade) await updateUserPassword(c.env.DB, user.id, await hashPassword(password));
+        // A correct password is not yet a session when a second factor is enrolled. The
+        // pending token proves only that this step passed; it cannot be used as a session.
+        if (user.totp_enabled && user.totp_secret) {
+          await clearLoginFailures(c.env.DB, ip);
+          setCookie(c, PENDING_2FA_COOKIE, await makePending2faToken(user.id, "ws_default", c.env.SESSION_SECRET), {
+            path: "/",
+            httpOnly: true,
+            secure: new URL(c.req.url).protocol === "https:",
+            sameSite: "Lax",
+            maxAge: Math.floor(PENDING_2FA_TTL_MS / 1000),
+          });
+          return c.redirect("/admin/login/2fa");
+        }
         sessionToken = await makeUserSessionToken(user.id, "ws_default", c.env.SESSION_SECRET);
       }
     }
@@ -1161,6 +1215,46 @@ app.post("/admin/login", async (c) => {
   }
   await clearLoginFailures(c.env.DB, ip);
   setSessionCookie(c, sessionToken);
+  return c.redirect("/admin");
+});
+
+app.get("/admin/login/2fa", async (c) => {
+  const pending = await readPending2faToken(getCookie(c, PENDING_2FA_COOKIE), c.env.SESSION_SECRET);
+  if (!pending) return c.redirect("/admin/login");
+  return c.html(<TwoFactorPage />);
+});
+
+app.post("/admin/login/2fa", async (c) => {
+  if (sameOriginCheck(c) !== "ok") return c.text("Cross-origin sign-in rejected.", 403);
+  const ip = clientIp(c);
+  // The code space is only a million wide, so this step needs the same brute-force ceiling
+  // the password step has -- otherwise the second factor is guessable at leisure.
+  if (await tooManyLoginAttempts(c.env.DB, ip)) {
+    return c.html(<TwoFactorPage error="Too many attempts. Wait 15 minutes and try again." />, 429);
+  }
+  const pending = await readPending2faToken(getCookie(c, PENDING_2FA_COOKIE), c.env.SESSION_SECRET);
+  if (!pending) return c.redirect("/admin/login");
+
+  const body = await c.req.parseBody();
+  const submitted = String(body.code ?? "").trim();
+  const user = await getUserById(c.env.DB, pending.userId);
+  if (!user?.totp_secret) return c.redirect("/admin/login");
+
+  let passed = await verifyTotp(user.totp_secret, submitted);
+  // A recovery code is accepted in the same field: someone without their phone should not
+  // have to find a different form to sign in with.
+  if (!passed && submitted.length >= 10) {
+    passed = await consumeRecoveryCode(c.env.DB, user.id, await sha256Hex(normaliseRecoveryCode(submitted)));
+    if (passed) await audit(c.env.DB, "auth.recovery_code_used", user.id, "recovery code spent");
+  }
+  if (!passed) {
+    await recordLoginFailure(c.env.DB, ip);
+    return c.html(<TwoFactorPage error="That code is not valid. Check your authenticator app and try again." />, 401);
+  }
+
+  await clearLoginFailures(c.env.DB, ip);
+  deleteCookie(c, PENDING_2FA_COOKIE, { path: "/" });
+  setSessionCookie(c, await makeUserSessionToken(user.id, pending.workspaceId, c.env.SESSION_SECRET));
   return c.redirect("/admin");
 });
 
@@ -1399,7 +1493,7 @@ app.post("/r/:token/erase", async (c) => {
 
 app.use("/admin/*", async (c, next) => {
   const path = new URL(c.req.url).pathname;
-  if (path === "/admin/login" || path === "/admin/logout") return next();
+  if (path === "/admin/login" || path === "/admin/logout" || path === "/admin/login/2fa") return next();
   const token = getCookie(c, COOKIE);
   const userSessionValid = await verifyUserSessionToken(token, c.env.SESSION_SECRET);
   let authorized = userSessionValid;
@@ -2504,6 +2598,16 @@ app.get("/admin/settings", async (c) => {
   const section = (SECTIONS_KEYS as readonly string[]).includes(sectionParam ?? "")
     ? (sectionParam as SettingsSection)
     : "general";
+  const actorForSecurity = await currentActor(c);
+  const actorUser = await getUserById(c.env.DB, actorForSecurity.id);
+  const twoFactorState = {
+    enabled: !!actorUser?.totp_enabled,
+    // "Enrolling" is having a secret without having proved a code from it yet.
+    enrolling: !!actorUser?.totp_secret && !actorUser?.totp_enabled,
+    recoveryRemaining: actorUser ? await countUnusedRecoveryCodes(c.env.DB, actorUser.id) : 0,
+  };
+  const newRecoveryCodes = (url.searchParams.get("codes") ?? "").split(",").map((code) => code.trim()).filter(Boolean);
+
   const [stats, forms, retentionDays, apiKeys, members, allowedDomains] = await Promise.all([
     getDashboardStats(c.env.DB),
     listForms(c.env.DB, wsOf(c)),
@@ -2522,6 +2626,8 @@ app.get("/admin/settings", async (c) => {
       stats={stats}
       formsWithNotify={forms}
       retentionDays={retentionDays}
+      twoFactor={twoFactorState}
+      newRecoveryCodes={newRecoveryCodes}
       apiKeys={apiKeys}
       createdKey={createdKey}
       members={members}
@@ -2583,6 +2689,64 @@ app.post("/admin/settings/members/:id/remove", async (c) => {
   await deleteMembership(c.env.DB, c.req.param("id"), wsOf(c));
   await audit(c.env.DB, "membership.removed", c.req.param("id"), "removed");
   return c.redirect("/admin/settings?section=members&msg=Member+removed");
+});
+
+/* ---------- two-factor enrolment ---------- */
+
+app.post("/admin/security/2fa/start", async (c) => {
+  const actor = await currentActor(c);
+  const user = await getUserById(c.env.DB, actor.id);
+  if (!user) return c.redirect("/admin/settings?section=security&msg=Two-step+needs+a+user+account");
+  // The secret is stored but not enabled. Nothing changes about sign-in until the user
+  // proves they can read a code from it.
+  await setUserTotpSecret(c.env.DB, user.id, generateSecret());
+  return c.redirect("/admin/settings?section=security&enroll=1");
+});
+
+app.post("/admin/security/2fa/enable", async (c) => {
+  const actor = await currentActor(c);
+  const user = await getUserById(c.env.DB, actor.id);
+  if (!user?.totp_secret) return c.redirect("/admin/settings?section=security&msg=Start+enrolment+first");
+
+  const body = await c.req.parseBody();
+  if (!(await verifyTotp(user.totp_secret, String(body.code ?? "")))) {
+    return c.redirect("/admin/settings?section=security&enroll=1&msg=That+code+did+not+match.+Check+the+time+on+your+phone.");
+  }
+
+  // Recovery codes are shown exactly once, here. Only their hashes are stored, so there is
+  // no way to display them again later -- a fresh set has to be generated instead.
+  const codes = generateRecoveryCodes();
+  await storeRecoveryCodes(c.env.DB, user.id, await Promise.all(codes.map((code) => sha256Hex(normaliseRecoveryCode(code)))));
+  await enableUserTotp(c.env.DB, user.id);
+  await audit(c.env.DB, "auth.2fa_enabled", user.id, "two-step verification enabled");
+  return c.redirect(`/admin/settings?section=security&codes=${encodeURIComponent(codes.join(","))}`);
+});
+
+app.post("/admin/security/2fa/disable", async (c) => {
+  const actor = await currentActor(c);
+  const user = await getUserById(c.env.DB, actor.id);
+  if (!user) return c.redirect("/admin/settings?section=security");
+  // Turning the factor off is itself a sensitive action, so it requires a current code --
+  // otherwise a stolen session is enough to remove the protection the factor exists for.
+  const body = await c.req.parseBody();
+  const submitted = String(body.code ?? "").trim();
+  const ok = user.totp_secret
+    ? (await verifyTotp(user.totp_secret, submitted)) ||
+      (await consumeRecoveryCode(c.env.DB, user.id, await sha256Hex(normaliseRecoveryCode(submitted))))
+    : false;
+  if (!ok) return c.redirect("/admin/settings?section=security&msg=Enter+a+valid+code+to+turn+two-step+off");
+  await disableUserTotp(c.env.DB, user.id);
+  await audit(c.env.DB, "auth.2fa_disabled", user.id, "two-step verification disabled");
+  return c.redirect("/admin/settings?section=security&msg=Two-step+verification+turned+off");
+});
+
+app.get("/admin/security/2fa/qr", async (c) => {
+  const actor = await currentActor(c);
+  const user = await getUserById(c.env.DB, actor.id);
+  if (!user?.totp_secret) return c.notFound();
+  const svg = generateQrSvg(otpauthUri(user.totp_secret, user.email, c.env.WORKSPACE_NAME || "FormRelay"), { size: 200 });
+  // no-store: the QR encodes the shared secret and must not sit in a cache.
+  return new Response(svg, { headers: { "content-type": "image/svg+xml", "cache-control": "no-store" } });
 });
 
 app.post("/admin/settings/members/:id/transfer", async (c) => {

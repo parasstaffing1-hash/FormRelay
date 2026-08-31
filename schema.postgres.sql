@@ -3,8 +3,8 @@
 --   node scripts/pg-schema.mjs
 --
 -- SQLite -> PostgreSQL mappings applied:
---   AUTOINCREMENT -> BIGSERIAL: 13
---   INTEGER -> BIGINT (epoch-ms overflows int4): 89
+--   AUTOINCREMENT -> BIGSERIAL: 14
+--   INTEGER -> BIGINT (epoch-ms overflows int4): 93
 --
 -- Deliberately unchanged: TEXT, CHECK constraints, partial indexes (WHERE clauses) and
 -- IF NOT EXISTS are all valid Postgres and mean the same thing in both engines.
@@ -41,8 +41,26 @@ CREATE TABLE IF NOT EXISTS users (
   email TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
   password_hash TEXT NOT NULL,
+  created_at BIGINT NOT NULL,
+  -- TOTP secrets cannot be hashed: verification needs the original value. This makes the
+  -- users table more sensitive than it was, which is the trade a second factor always
+  -- makes -- and why recovery codes are hashed instead.
+  totp_secret TEXT,
+  totp_enabled BIGINT NOT NULL DEFAULT 0,
+  totp_enrolled_at BIGINT
+);
+
+-- Single-use recovery codes so a lost phone does not mean a lost workspace. Hashed like
+-- passwords; a used code keeps its row so the audit trail survives.
+CREATE TABLE IF NOT EXISTS recovery_codes (
+  id BIGSERIAL PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  code_hash TEXT NOT NULL,
+  used_at BIGINT,
   created_at BIGINT NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_recovery_codes_user ON recovery_codes (user_id) WHERE used_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS memberships (
   user_id TEXT NOT NULL,

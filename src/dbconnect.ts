@@ -41,6 +41,32 @@ export function createClient(url: string): PgClient {
     prepare: false,
     idle_timeout: 20,
     connect_timeout: 10,
+    types: {
+      /*
+       * Parse int8 as a JS number.
+       *
+       * postgres.js returns int8 as a string by default, because a 64-bit integer can
+       * exceed Number.MAX_SAFE_INTEGER. That default is actively dangerous here: the
+       * schema maps SQLite INTEGER to BIGINT, so every flag lands as "0" or "1" -- and
+       * "0" is truthy. A disabled feature read as enabled is not a rounding error, it is
+       * a lockout.
+       *
+       * Safe for this schema specifically: every BIGINT column is an epoch-millisecond
+       * timestamp (~1.7e12), a counter, or a 0/1 flag. All are orders of magnitude below
+       * 9.007e15. Values beyond that would lose precision, so anything genuinely large
+       * must not be stored in one of these columns.
+       *
+       * Applied by column type, not column name -- a name-based list can only cover the
+       * columns someone remembered, and TEXT columns are untouched either way, so a
+       * postcode of "01234" stays a string.
+       */
+      bigint: {
+        to: 20,
+        from: [20],
+        serialize: (value: number | bigint) => value.toString(),
+        parse: (value: string) => Number(value),
+      },
+    },
   }) as unknown as PgClient;
 }
 

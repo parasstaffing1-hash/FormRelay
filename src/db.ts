@@ -841,6 +841,69 @@ export async function ensureBootstrapOwner(db: D1Database, email: string, passwo
   return user;
 }
 
+/* ---------------- two-factor ---------------- */
+
+export async function getUserById(db: D1Database, id: string): Promise<UserRow | null> {
+  return await db.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
+}
+
+/**
+ * Stores a secret without turning the factor on.
+ *
+ * Enrolment is deliberately two steps: the secret is saved, then the user must prove they
+ * can generate a code from it before it starts gating sign-in. Enabling on write would let
+ * someone lock themselves out with a mistyped or unscanned secret.
+ */
+export async function setUserTotpSecret(db: D1Database, userId: string, secret: string): Promise<void> {
+  await db.prepare("UPDATE users SET totp_secret = ?, totp_enabled = 0 WHERE id = ?").bind(secret, userId).run();
+}
+
+export async function enableUserTotp(db: D1Database, userId: string): Promise<void> {
+  await db.prepare("UPDATE users SET totp_enabled = 1, totp_enrolled_at = ? WHERE id = ?").bind(Date.now(), userId).run();
+}
+
+/** Turning the factor off clears the secret and every unused recovery code with it. */
+export async function disableUserTotp(db: D1Database, userId: string): Promise<void> {
+  await db.batch([
+    db.prepare("UPDATE users SET totp_secret = NULL, totp_enabled = 0, totp_enrolled_at = NULL WHERE id = ?").bind(userId),
+    db.prepare("DELETE FROM recovery_codes WHERE user_id = ?").bind(userId),
+  ]);
+}
+
+/** Replaces any existing codes: issuing a new set must invalidate the old one. */
+export async function storeRecoveryCodes(db: D1Database, userId: string, hashes: string[]): Promise<void> {
+  const now = Date.now();
+  await db.batch([
+    db.prepare("DELETE FROM recovery_codes WHERE user_id = ?").bind(userId),
+    ...hashes.map((hash) =>
+      db.prepare("INSERT INTO recovery_codes (user_id, code_hash, used_at, created_at) VALUES (?, ?, NULL, ?)").bind(userId, hash, now)
+    ),
+  ]);
+}
+
+export async function countUnusedRecoveryCodes(db: D1Database, userId: string): Promise<number> {
+  const row = await db
+    .prepare("SELECT COUNT(*) AS n FROM recovery_codes WHERE user_id = ? AND used_at IS NULL")
+    .bind(userId)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+/**
+ * Spends a recovery code, returning whether it was valid and unused.
+ *
+ * The UPDATE carries `used_at IS NULL` in its WHERE clause and the decision is read from
+ * the affected row count, so two simultaneous submissions of the same code cannot both
+ * succeed. Checking first and updating after would leave exactly that race.
+ */
+export async function consumeRecoveryCode(db: D1Database, userId: string, codeHash: string): Promise<boolean> {
+  const result = await db
+    .prepare("UPDATE recovery_codes SET used_at = ? WHERE user_id = ? AND code_hash = ? AND used_at IS NULL")
+    .bind(Date.now(), userId, codeHash)
+    .run();
+  return (result.meta?.changes ?? 0) > 0;
+}
+
 export async function getUserByEmail(db: D1Database, email: string): Promise<UserRow | null> {
   return await db.prepare("SELECT * FROM users WHERE lower(email) = lower(?)").bind(email).first<UserRow>();
 }

@@ -184,7 +184,10 @@ export const SettingsPage: FC<{
   members?: (UserRow & { role: string })[];
   inviteUrl?: string;
   allowedDomains?: AllowedDomainsConfig;
-}> = ({ path, section, workspaceName, stats, formsWithNotify, toastMsg, commands, formCount, submissionCount, retentionDays, apiKeys, createdKey, members = [], inviteUrl, allowedDomains }) => {
+  twoFactor?: { enabled: boolean; enrolling: boolean; recoveryRemaining: number };
+  /** Shown exactly once, immediately after enabling. Only hashes are stored. */
+  newRecoveryCodes?: string[];
+}> = ({ path, section, workspaceName, stats, formsWithNotify, toastMsg, commands, formCount, submissionCount, retentionDays, apiKeys, createdKey, members = [], inviteUrl, allowedDomains, twoFactor, newRecoveryCodes = [] }) => {
   const active = SECTIONS.some((s) => s.key === section) ? section : "general";
 
   return (
@@ -431,7 +434,55 @@ export const SettingsPage: FC<{
             <div class="setsec">
               <h2>Security</h2>
               <p class="desc">How this dashboard protects itself.</p>
-              <div class="kv"><span class="k">Authentication</span><span>Shared admin password → signed HMAC session cookie (7 days)</span></div>
+              <div class="card mt16">
+                <div class="card-h"><span>Two-step verification</span>{twoFactor?.enabled ? <span class="badge badge-neutral">On</span> : null}</div>
+                <div class="card-b">
+                  {newRecoveryCodes.length > 0 ? (
+                    <div class="field">
+                      <p style="font-weight:600;font-size:14px;margin:0 0 4px">Save your recovery codes now</p>
+                      <p class="small t2" style="margin:0 0 10px">
+                        Each code works once, if you lose your phone. This is the only time they are shown —
+                        only their hashes are stored, so they cannot be displayed again.
+                      </p>
+                      <div class="mono" style="background:var(--paper-2);padding:12px;border-radius:8px;font-size:13px;line-height:1.9">{newRecoveryCodes.map((code) => <div>{code}</div>)}</div>
+                    </div>
+                  ) : null}
+
+                  {twoFactor?.enabled ? (
+                    <>
+                      <p class="small t2">
+                        Sign-in requires a code from your authenticator app.
+                        {" "}{twoFactor.recoveryRemaining} recovery {twoFactor.recoveryRemaining === 1 ? "code" : "codes"} unused.
+                      </p>
+                      <form method="post" action="/admin/security/2fa/disable" class="flex gap8" style="align-items:flex-end;margin-top:12px" data-confirm="Turn off two-step verification?">
+                        <div class="field" style="margin:0"><label for="off-code">Current code</label><input class="input" id="off-code" name="code" inputmode="numeric" autocomplete="one-time-code" required placeholder="123456" /></div>
+                        <button class="btn btn-danger btn-sm" type="submit">Turn off</button>
+                      </form>
+                    </>
+                  ) : twoFactor?.enrolling ? (
+                    <>
+                      <p class="small t2" style="margin:0 0 12px">Scan this with your authenticator app, then enter the code it shows to finish.</p>
+                      <img src="/admin/security/2fa/qr" alt="Two-step verification setup QR code" width="200" height="200" style="display:block;border-radius:8px" />
+                      <form method="post" action="/admin/security/2fa/enable" class="flex gap8" style="align-items:flex-end;margin-top:12px">
+                        <div class="field" style="margin:0"><label for="on-code">Code from the app</label><input class="input" id="on-code" name="code" inputmode="numeric" autocomplete="one-time-code" required placeholder="123456" /></div>
+                        <button class="btn btn-primary btn-sm" type="submit">Turn on</button>
+                      </form>
+                    </>
+                  ) : (
+                    <>
+                      <p class="small t2" style="margin:0 0 12px">
+                        Require a code from your phone as well as your password. Without it, a leaked password is
+                        enough to read every submission this workspace holds.
+                      </p>
+                      <form method="post" action="/admin/security/2fa/start">
+                        <button class="btn btn-primary btn-sm" type="submit">Set up two-step verification</button>
+                      </form>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div class="kv"><span class="k">Authentication</span><span>Password{twoFactor?.enabled ? " + authenticator code" : ""} → signed HMAC session cookie (7 days)</span></div>
               <div class="kv"><span class="k">Spam protection</span><span>Honeypot fields, per-IP rate limiting, optional Turnstile</span></div>
               <div class="kv"><span class="k">Webhook integrity</span><span>HMAC-SHA256 signatures per webhook secret</span></div>
               <p class="hint small t2 mt16">
