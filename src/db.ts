@@ -1,7 +1,7 @@
 import {
   FormRow, FormWithStats, SubmissionRow, SubmissionWithContext,
   WebhookRow, WebhookWithContext, DeliveryRow, DashboardStats,
-  ApiKeyRow, WorkflowRow, WorkflowRunRow, WorkflowStepRow, UserRow, MembershipRow, InvitationRow,
+  ApiKeyRow, WorkflowRow, WorkflowRunRow, WorkflowStepRow, UserRow, MembershipRow, InvitationRow, ContactRow,
 } from "./types";
 import { ChainLink, computeRowHash, genesisHash } from "./integrity";
 import { SubmissionEvent } from "./events";
@@ -1106,4 +1106,164 @@ export async function setSubmissionIngestMeta(
 
 export async function updateFormSpamRules(db: D1Database, formId: string, rulesJson: string): Promise<void> {
   await db.prepare("UPDATE forms SET spam_rules_json = ? WHERE id = ?").bind(rulesJson, formId).run();
+}
+
+/* ---------- contacts ---------- */
+
+/**
+ * Links a submission to a contact, creating the contact on first sight.
+ *
+ * Matching is deterministic on `dedupe_key` only. Fields are filled in rather than
+ * overwritten: a later submission that omits the company must not erase a company we
+ * already learned, but a later submission that supplies one should fill the gap.
+ */
+export async function upsertContact(
+  db: D1Database,
+  identity: { key: string; email: string; phone: string; name: string },
+  extra: { company?: string; sourceForm?: string; utm?: Record<string, string>; workspaceId?: string }
+): Promise<{ contact: ContactRow; isRepeat: boolean }> {
+  const workspaceId = extra.workspaceId ?? "ws_default";
+  const now = Date.now();
+  const existing = await db
+    .prepare("SELECT * FROM contacts WHERE workspace_id = ? AND dedupe_key = ?")
+    .bind(workspaceId, identity.key)
+    .first<ContactRow>();
+
+  if (existing) {
+    await db.prepare(
+      `UPDATE contacts SET
+         last_seen = ?,
+         submission_count = submission_count + 1,
+         name = CASE WHEN name = '' THEN ? ELSE name END,
+         email = CASE WHEN email = '' THEN ? ELSE email END,
+         phone = CASE WHEN phone = '' THEN ? ELSE phone END,
+         company = CASE WHEN company = '' THEN ? ELSE company END
+       WHERE id = ?`
+    ).bind(now, identity.name, identity.email, identity.phone, extra.company ?? "", existing.id).run();
+    const refreshed = await db.prepare("SELECT * FROM contacts WHERE id = ?").bind(existing.id).first<ContactRow>();
+    return { contact: refreshed ?? existing, isRepeat: true };
+  }
+
+  const contact: ContactRow = {
+    id: `con_${randomId(14)}`,
+    workspace_id: workspaceId,
+    dedupe_key: identity.key,
+    email: identity.email,
+    phone: identity.phone,
+    name: identity.name,
+    company: extra.company ?? "",
+    first_seen: now,
+    last_seen: now,
+    submission_count: 1,
+    status: "new",
+    assigned_to: "",
+    tags_json: "[]",
+    note: "",
+    lead_score: 0,
+    score_breakdown: "[]",
+    score_version: "",
+    source_form: extra.sourceForm ?? "",
+    utm_json: JSON.stringify(extra.utm ?? {}),
+    created_at: now,
+  };
+  await db.prepare(
+    `INSERT INTO contacts (id, workspace_id, dedupe_key, email, phone, name, company, first_seen, last_seen,
+      submission_count, status, assigned_to, tags_json, note, lead_score, score_breakdown, score_version,
+      source_form, utm_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    contact.id, contact.workspace_id, contact.dedupe_key, contact.email, contact.phone, contact.name,
+    contact.company, contact.first_seen, contact.last_seen, contact.submission_count, contact.status,
+    contact.assigned_to, contact.tags_json, contact.note, contact.lead_score, contact.score_breakdown,
+    contact.score_version, contact.source_form, contact.utm_json, contact.created_at
+  ).run();
+  return { contact, isRepeat: false };
+}
+
+export async function attachSubmissionToContact(
+  db: D1Database,
+  submissionId: number,
+  contactId: string,
+  score: number,
+  breakdown: string
+): Promise<void> {
+  await db.prepare("UPDATE submissions SET contact_id = ?, lead_score = ?, score_breakdown = ? WHERE id = ?")
+    .bind(contactId, score, breakdown, submissionId).run();
+}
+
+/** The contact carries the best score any of its submissions has produced. */
+export async function updateContactScore(db: D1Database, contactId: string, score: number, breakdown: string, version: string): Promise<void> {
+  await db.prepare(
+    "UPDATE contacts SET lead_score = MAX(lead_score, ?), score_breakdown = ?, score_version = ? WHERE id = ?"
+  ).bind(score, breakdown, version, contactId).run();
+}
+
+export const CONTACTS_PAGE_SIZE = 25;
+
+export async function listContacts(
+  db: D1Database,
+  opts: { status?: string; q?: string; page?: number } = {}
+): Promise<ContactRow[]> {
+  const page = Math.max(1, opts.page ?? 1);
+  const offset = (page - 1) * CONTACTS_PAGE_SIZE;
+  const clauses: string[] = ["1=1"];
+  const binds: unknown[] = [];
+  if (opts.status) { clauses.push("status = ?"); binds.push(opts.status); }
+  if (opts.q) {
+    clauses.push("(email LIKE ? OR name LIKE ? OR company LIKE ? OR phone LIKE ?)");
+    const like = `%${opts.q}%`;
+    binds.push(like, like, like, like);
+  }
+  const { results } = await db.prepare(
+    `SELECT * FROM contacts WHERE ${clauses.join(" AND ")} ORDER BY last_seen DESC LIMIT ? OFFSET ?`
+  ).bind(...binds, CONTACTS_PAGE_SIZE, offset).all<ContactRow>();
+  return results ?? [];
+}
+
+export async function countContacts(db: D1Database, opts: { status?: string; q?: string } = {}): Promise<number> {
+  const clauses: string[] = ["1=1"];
+  const binds: unknown[] = [];
+  if (opts.status) { clauses.push("status = ?"); binds.push(opts.status); }
+  if (opts.q) {
+    clauses.push("(email LIKE ? OR name LIKE ? OR company LIKE ? OR phone LIKE ?)");
+    const like = `%${opts.q}%`;
+    binds.push(like, like, like, like);
+  }
+  const row = await db.prepare(`SELECT COUNT(*) AS n FROM contacts WHERE ${clauses.join(" AND ")}`).bind(...binds).first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+export async function getContact(db: D1Database, id: string): Promise<ContactRow | null> {
+  return await db.prepare("SELECT * FROM contacts WHERE id = ?").bind(id).first<ContactRow>();
+}
+
+export async function listContactSubmissions(db: D1Database, contactId: string, limit = 50): Promise<SubmissionRow[]> {
+  const { results } = await db.prepare(
+    "SELECT * FROM submissions WHERE contact_id = ? ORDER BY created_at DESC LIMIT ?"
+  ).bind(contactId, limit).all<SubmissionRow>();
+  return results ?? [];
+}
+
+export async function updateContactMeta(
+  db: D1Database,
+  id: string,
+  patch: { status?: string; assigned_to?: string; note?: string; tags_json?: string }
+): Promise<void> {
+  const sets: string[] = [];
+  const binds: unknown[] = [];
+  for (const [key, value] of Object.entries(patch)) {
+    if (value !== undefined) { sets.push(`${key} = ?`); binds.push(value); }
+  }
+  if (!sets.length) return;
+  await db.prepare(`UPDATE contacts SET ${sets.join(", ")} WHERE id = ?`).bind(...binds, id).run();
+}
+
+export async function contactStats(db: D1Database): Promise<{ total: number; hot: number; new_count: number }> {
+  const row = await db.prepare(
+    `SELECT COUNT(*) AS total,
+            SUM(CASE WHEN lead_score >= 60 THEN 1 ELSE 0 END) AS hot,
+            SUM(CASE WHEN status = 'new' THEN 1 ELSE 0 END) AS new_count
+     FROM contacts`
+  ).first<{ total: number; hot: number; new_count: number }>();
+  return { total: row?.total ?? 0, hot: row?.hot ?? 0, new_count: row?.new_count ?? 0 };
 }

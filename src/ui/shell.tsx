@@ -47,6 +47,7 @@ export const AppShell: FC<
       items: [
         { label: "Forms", href: "/admin/forms", icon: <IconForm />, match: (p) => p.startsWith("/admin/forms"), count: formCount },
         { label: "Submissions", href: "/admin/submissions", icon: <IconInbox />, match: (p) => p.startsWith("/admin/submissions"), count: submissionCount },
+        { label: "Contacts", href: "/admin/contacts", icon: <IconUsers />, match: (p) => p.startsWith("/admin/contacts") },
       ],
     },
     {

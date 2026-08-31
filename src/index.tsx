@@ -98,6 +98,16 @@ import {
   findRecentByFingerprint,
   setSubmissionIngestMeta,
   updateFormSpamRules,
+  upsertContact,
+  attachSubmissionToContact,
+  updateContactScore,
+  listContacts,
+  countContacts,
+  getContact,
+  listContactSubmissions,
+  updateContactMeta,
+  contactStats,
+  CONTACTS_PAGE_SIZE,
   getInsightRows,
   rotateWebhookSecret,
   getAllowedDomains,
@@ -117,6 +127,7 @@ import { verifyPow, issuePowChallenge, blindIdentity, buildConsentReceipt, score
 import { POW_CLIENT_JS } from "./pow-client";
 import { readIdempotencyKey, IDEMPOTENCY_HEADER, contentFingerprint } from "./events";
 import { assessSpam, parseSpamRules, spamSummary } from "./spam-score";
+import { extractIdentity, extractCompany, scoreLead, parseScoreRules, scoreBand, LEAD_STATUSES, isLeadStatus } from "./contacts";
 import { guardSelect, cohortFor, isRecurrence, Recurrence, applyMigration, migrateSchemaBlocks, MigrationOp, isSealed, sealedNotice } from "./ops";
 import { PublicFormPage, FORM_RUNTIME_JS } from "./pages/public-form";
 import { BuilderPage, BUILDER_JS } from "./pages/builder";
@@ -136,6 +147,7 @@ import { InboxPage } from "./pages/inbox";
 import { SubmissionDetailPage } from "./pages/submission-detail";
 import { WebhooksPage, WebhookDetailPage, ComingSoonPage } from "./pages/webhook-pages";
 import { WorkflowsPage, FilesPage, SettingsPage, SettingsSection, LoginPage, LandingPage } from "./pages/misc";
+import { ContactsPage, ContactDetailPage } from "./pages/contacts";
 import { InsightsPage } from "./pages/insights";
 import { fieldFunnel, completionStats, answerDistribution, deviceBreakdown, Respondent, InsightBlock } from "./insights";
 import { templateSchema, TemplateKey } from "./templates";
@@ -368,6 +380,7 @@ function baseCommands(origin: string): CommandItem[] {
     { label: "Go to Home", href: "/admin", icon: NAV_ICONS.home },
     { label: "Go to Forms", href: "/admin/forms", icon: NAV_ICONS.form },
     { label: "Search submissions", href: "/admin/submissions", icon: NAV_ICONS.inbox, keywords: "inbox find" },
+    { label: "Go to Contacts", href: "/admin/contacts", icon: NAV_ICONS.inbox, keywords: "leads crm people" },
     { label: "Go to Workflows", href: "/admin/workflows", icon: NAV_ICONS.zap },
     { label: "Go to Webhooks", href: "/admin/webhooks", icon: NAV_ICONS.webhook },
     { label: "Go to Settings", href: "/admin/settings", icon: NAV_ICONS.settings },
@@ -733,6 +746,37 @@ app.post("/f/:id", async (c) => {
       await recordEvent(c.env.DB, submissionId, "validated", "ok", `${Object.keys(data).length} fields accepted`);
       await recordEvent(c.env.DB, submissionId, "persisted", "ok", `stored as submission ${submissionId}`);
       await annotateSubmission(c.env.DB, submissionId, JSON.stringify(quality), consent ? JSON.stringify(consent) : "", respondentKey);
+
+      // Turn a repeat submitter into one contact rather than three leads. Identity is
+      // deterministic (email, else phone); an unidentifiable submission stays standalone.
+      if (!verdict.spam) {
+        const identity = extractIdentity(data, labels);
+        if (identity.key) {
+          try {
+            const { contact, isRepeat } = await upsertContact(c.env.DB, identity, {
+              company: extractCompany(data, labels),
+              sourceForm: form.id,
+              utm: trackingMetadata(c.req.url),
+            });
+            const lead = scoreLead({
+              values: data,
+              identity,
+              company: contact.company,
+              country: c.req.header("cf-ipcountry") || "",
+              isRepeat,
+              rules: parseScoreRules(form.score_rules_json),
+            });
+            await attachSubmissionToContact(c.env.DB, submissionId, contact.id, lead.score, JSON.stringify(lead.breakdown));
+            await updateContactScore(c.env.DB, contact.id, lead.score, JSON.stringify(lead.breakdown), lead.rulesVersion);
+            await recordEvent(c.env.DB, submissionId, "contact_linked", "ok",
+              `${isRepeat ? "matched" : "created"} contact on ${identity.matchedOn} - lead score ${lead.score}`);
+          } catch (error) {
+            await recordEvent(c.env.DB, submissionId, "contact_linked", "failed", error instanceof Error ? error.message : String(error));
+          }
+        } else {
+          await recordEvent(c.env.DB, submissionId, "contact_linked", "skipped", "no email or phone to identify a contact");
+        }
+      }
       const recurrence = (form.recurrence ?? "off") as Recurrence;
       if (recurrence !== "off") await setSubmissionCohort(c.env.DB, submissionId, cohortFor(Date.now(), recurrence));
     }
@@ -965,6 +1009,80 @@ app.post("/invite/:token", async (c) => {
   const user = await acceptInvitation(c.env.DB, invite, name, await hashPassword(password));
   setSessionCookie(c, await makeUserSessionToken(user.id, invite.workspace_id, c.env.SESSION_SECRET));
   return c.redirect("/admin?msg=Invitation+accepted");
+});
+
+/* ---------- contacts ---------- */
+
+app.get("/admin/contacts", async (c) => {
+  const url = new URL(c.req.url);
+  const q = url.searchParams.get("q")?.trim() || undefined;
+  const statusParam = url.searchParams.get("status")?.trim() || "";
+  const status = isLeadStatus(statusParam) ? statusParam : undefined;
+  const page = parsePage(url.searchParams.get("page"));
+
+  const [contacts, total, stats, dash] = await Promise.all([
+    listContacts(c.env.DB, { q, status, page }),
+    countContacts(c.env.DB, { q, status }),
+    contactStats(c.env.DB),
+    getDashboardStats(c.env.DB),
+  ]);
+
+  return c.html(
+    <ContactsPage
+      path={url.pathname}
+      contacts={contacts}
+      total={total}
+      page={page}
+      pageSize={CONTACTS_PAGE_SIZE}
+      stats={stats}
+      q={q}
+      status={status}
+      toastMsg={msgFrom(c)}
+      commands={baseCommands(originOf(c.req.url))}
+      formCount={dash.form_count}
+      submissionCount={dash.submission_count}
+    />
+  );
+});
+
+app.get("/admin/contacts/:id", async (c) => {
+  const contact = await getContact(c.env.DB, c.req.param("id"));
+  if (!contact) return c.notFound();
+  const [submissions, dash] = await Promise.all([
+    listContactSubmissions(c.env.DB, contact.id),
+    getDashboardStats(c.env.DB),
+  ]);
+  return c.html(
+    <ContactDetailPage
+      path={new URL(c.req.url).pathname}
+      contact={contact}
+      submissions={submissions}
+      toastMsg={msgFrom(c)}
+      commands={baseCommands(originOf(c.req.url))}
+      formCount={dash.form_count}
+      submissionCount={dash.submission_count}
+    />
+  );
+});
+
+app.post("/admin/contacts/:id/status", async (c) => {
+  const id = c.req.param("id");
+  if (!(await getContact(c.env.DB, id))) return c.notFound();
+  const body = await c.req.parseBody();
+  const status = String(body.status ?? "");
+  if (!isLeadStatus(status)) return c.text("Unknown lead status.", 400);
+  await updateContactMeta(c.env.DB, id, { status });
+  await audit(c.env.DB, "contact.status.changed", id, status);
+  return c.redirect(`/admin/contacts/${id}?msg=${encodeURIComponent("Status updated")}`);
+});
+
+app.post("/admin/contacts/:id/note", async (c) => {
+  const id = c.req.param("id");
+  if (!(await getContact(c.env.DB, id))) return c.notFound();
+  const body = await c.req.parseBody();
+  await updateContactMeta(c.env.DB, id, { note: String(body.note ?? "").slice(0, 4000) });
+  await audit(c.env.DB, "contact.note.updated", id, "note saved");
+  return c.redirect(`/admin/contacts/${id}?msg=${encodeURIComponent("Note saved")}`);
 });
 
 /* ---------- respondent receipt portal ---------- */

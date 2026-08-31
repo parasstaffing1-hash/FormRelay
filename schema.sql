@@ -88,7 +88,8 @@ CREATE TABLE IF NOT EXISTS forms (
   field_acl_json TEXT NOT NULL DEFAULT '{}',
   recurrence TEXT NOT NULL DEFAULT 'off',
   unlock_at INTEGER,
-  spam_rules_json TEXT NOT NULL DEFAULT ''
+  spam_rules_json TEXT NOT NULL DEFAULT '',
+  score_rules_json TEXT NOT NULL DEFAULT ''
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_forms_slug ON forms (slug) WHERE slug IS NOT NULL AND slug != '';
@@ -143,8 +144,14 @@ CREATE TABLE IF NOT EXISTS submissions (
   idempotency_key TEXT,
   fingerprint TEXT,
   spam_score INTEGER NOT NULL DEFAULT 0,
-  spam_signals TEXT NOT NULL DEFAULT '[]'
+  spam_signals TEXT NOT NULL DEFAULT '[]',
+  contact_id TEXT,
+  lead_score INTEGER NOT NULL DEFAULT 0,
+  score_breakdown TEXT NOT NULL DEFAULT '[]',
+  lead_status TEXT NOT NULL DEFAULT 'new'
 );
+
+CREATE INDEX IF NOT EXISTS idx_submissions_contact ON submissions (contact_id, created_at DESC);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_submissions_idempotency
   ON submissions (form_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
@@ -332,3 +339,32 @@ CREATE TABLE IF NOT EXISTS submission_events (
 
 CREATE INDEX IF NOT EXISTS idx_submission_events_sub ON submission_events (submission_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_submission_events_failed ON submission_events (status, created_at DESC) WHERE status = 'failed';
+
+
+CREATE TABLE IF NOT EXISTS contacts (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL DEFAULT 'ws_default',
+  dedupe_key TEXT NOT NULL,
+  email TEXT NOT NULL DEFAULT '',
+  phone TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL DEFAULT '',
+  company TEXT NOT NULL DEFAULT '',
+  first_seen INTEGER NOT NULL,
+  last_seen INTEGER NOT NULL,
+  submission_count INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'new',
+  assigned_to TEXT NOT NULL DEFAULT '',
+  tags_json TEXT NOT NULL DEFAULT '[]',
+  note TEXT NOT NULL DEFAULT '',
+  lead_score INTEGER NOT NULL DEFAULT 0,
+  score_breakdown TEXT NOT NULL DEFAULT '[]',
+  score_version TEXT NOT NULL DEFAULT '',
+  source_form TEXT NOT NULL DEFAULT '',
+  utm_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_dedupe ON contacts (workspace_id, dedupe_key);
+CREATE INDEX IF NOT EXISTS idx_contacts_last_seen ON contacts (last_seen DESC);
+CREATE INDEX IF NOT EXISTS idx_contacts_status ON contacts (status, last_seen DESC);
+CREATE INDEX IF NOT EXISTS idx_contacts_score ON contacts (lead_score DESC);

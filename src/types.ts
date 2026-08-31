@@ -42,6 +42,7 @@ export type FormRow = {
   recurrence?: string;
   unlock_at?: number | null;
   spam_rules_json?: string;
+  score_rules_json?: string;
 };
 
 export type SubmissionStatus = "in_progress" | "partial" | "completed" | "abandoned" | "spam" | "deleted";
@@ -75,6 +76,10 @@ export type SubmissionRow = {
   fingerprint?: string | null;
   spam_score?: number;
   spam_signals?: string;
+  contact_id?: string | null;
+  lead_score?: number;
+  score_breakdown?: string;
+  lead_status?: string;
 };
 
 export type WebhookRow = {
@@ -144,3 +149,26 @@ export type NotificationRow = { id: number; kind: string; title: string; detail:
 export type UserRow = { id: string; email: string; name: string; password_hash: string; created_at: number };
 export type MembershipRow = { user_id: string; workspace_id: string; role: "owner" | "editor" | "viewer" | string; created_at: number };
 export type InvitationRow = { id: string; workspace_id: string; email: string; role: "editor" | "viewer" | string; token_hash: string; expires_at: number; accepted_at: number | null; created_at: number };
+
+export type ContactRow = {
+  id: string;
+  workspace_id: string;
+  dedupe_key: string;
+  email: string;
+  phone: string;
+  name: string;
+  company: string;
+  first_seen: number;
+  last_seen: number;
+  submission_count: number;
+  status: string;
+  assigned_to: string;
+  tags_json: string;
+  note: string;
+  lead_score: number;
+  score_breakdown: string;
+  score_version: string;
+  source_form: string;
+  utm_json: string;
+  created_at: number;
+};
