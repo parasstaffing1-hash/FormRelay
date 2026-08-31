@@ -1,6 +1,16 @@
 name = "formrelay"
 main = "src/index.tsx"
 compatibility_date = "2025-01-01"
+# Required by the Postgres driver (postgres.js needs node:net / node:crypto shims).
+compatibility_flags = ["nodejs_compat"]
+
+# Pools Postgres connections on Cloudflare's side. A Worker opens a connection per isolate
+# and Postgres caps concurrent connections, so connecting directly does not survive traffic.
+# Create with: npx wrangler hyperdrive create formrelay-pg --connection-string="<url>"
+# then paste the id below and uncomment.
+# [[hyperdrive]]
+# binding = "HYPERDRIVE"
+# id = "REPLACE_WITH_YOUR_HYPERDRIVE_ID"
 
 [[d1_databases]]
 binding = "DB"
