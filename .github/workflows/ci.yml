@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Tests
+        run: npm test
+
+      # schema.sql is what a fresh install runs; migrations/ is what an existing
+      # deployment runs. They drifted apart once already, silently, and the app only
+      # noticed when a query hit a missing column in production shape. Applying both to
+      # a scratch database proves each is independently valid SQL.
+      - name: Schema and migrations apply cleanly
+        run: |
+          npx wrangler d1 execute formrelay --local --file=./schema.sql
+          for m in migrations/*.sql; do
+            echo "checking $m parses"
+            node -e "
+              const sql = require('fs').readFileSync('$m', 'utf8');
+              if (!sql.trim()) { console.error('empty migration: $m'); process.exit(1); }
+            "
+          done

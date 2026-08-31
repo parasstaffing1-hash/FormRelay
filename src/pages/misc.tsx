@@ -7,6 +7,7 @@ import {
 import { FormRow, FormWithStats, DashboardStats, FileWithContext, ApiKeyRow, WorkflowRow, WorkflowRunRow, UserRow } from "../types";
 import { fmtBytes, fmtDateTime, fmtNumber } from "../util";
 import { FILES_PAGE_SIZE } from "../files";
+import { AllowedDomainsConfig } from "../db";
 
 /* ================= workflows ================= */
 
@@ -182,7 +183,8 @@ export const SettingsPage: FC<{
   createdKey?: string;
   members?: (UserRow & { role: string })[];
   inviteUrl?: string;
-}> = ({ path, section, workspaceName, stats, formsWithNotify, toastMsg, commands, formCount, submissionCount, retentionDays, apiKeys, createdKey, members = [], inviteUrl }) => {
+  allowedDomains?: AllowedDomainsConfig;
+}> = ({ path, section, workspaceName, stats, formsWithNotify, toastMsg, commands, formCount, submissionCount, retentionDays, apiKeys, createdKey, members = [], inviteUrl, allowedDomains }) => {
   const active = SECTIONS.some((s) => s.key === section) ? section : "general";
 
   return (
@@ -247,12 +249,76 @@ export const SettingsPage: FC<{
           {active === "domains" ? (
             <div class="setsec">
               <h2>Allowed domains</h2>
-              <p class="desc">Restrict which sites may POST to your endpoints.</p>
-              <EmptyState
-                icon={<IconGlobeish />}
-                title="Origin restrictions are coming soon"
-                desc="Endpoints currently accept submissions from any origin. Rate limiting and spam checks remain active."
-              />
+              <p class="desc">Restrict which websites and origins are permitted to submit to your form endpoints.</p>
+
+              <form method="post" action="/admin/settings/domains/toggle" class="card card-b flex between" style="align-items:center;margin-bottom:20px">
+                <div>
+                  <div style="font-weight:600;font-size:14px">Enforce origin restrictions</div>
+                  <div class="t2 small" style="margin-top:2px">
+                    {allowedDomains?.enforced
+                      ? "Origin enforcement is ACTIVE. Unrecognized origins/referrers will be rejected with 403 Forbidden."
+                      : "Origin enforcement is DISABLED. Submissions from any website origin are currently accepted."}
+                  </div>
+                </div>
+                <input type="hidden" name="enforced" value={allowedDomains?.enforced ? "0" : "1"} />
+                <button class={allowedDomains?.enforced ? "btn btn-danger btn-sm" : "btn btn-primary btn-sm"} type="submit">
+                  {allowedDomains?.enforced ? "Disable enforcement" : "Enable enforcement"}
+                </button>
+              </form>
+
+              <div style="margin-bottom:18px">
+                <h3 style="font-size:14px;font-weight:600;margin:0 0 8px">Add allowed domain</h3>
+                <form method="post" action="/admin/settings/domains/add" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+                  <div class="field" style="margin:0;flex:1;min-width:240px">
+                    <label for="domain-input">Domain or Origin pattern</label>
+                    <input
+                      class="input"
+                      id="domain-input"
+                      name="domain"
+                      placeholder="e.g. example.com, *.example.com, or localhost:3000"
+                      required
+                    />
+                  </div>
+                  <button class="btn btn-primary" type="submit">Add domain</button>
+                </form>
+                <p class="hint small t2" style="margin-top:6px">
+                  Supports exact domains (<code class="mono">mysite.com</code>), wildcards (<code class="mono">*.mysite.com</code>), and local origins (<code class="mono">localhost:3000</code>).
+                </p>
+              </div>
+
+              {allowedDomains?.domains && allowedDomains.domains.length > 0 ? (
+                <div class="card" style="padding:0 14px">
+                  <table class="tbl">
+                    <thead>
+                      <tr>
+                        <th>Allowed Domain / Pattern</th>
+                        <th style="width:90px;text-align:right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {allowedDomains.domains.map((dom) => (
+                        <tr class="row">
+                          <td><code class="mono" style="font-size:13px;font-weight:500">{dom}</code></td>
+                          <td style="text-align:right">
+                            <form method="post" action="/admin/settings/domains/delete" data-confirm="Remove this allowed domain?" style="display:inline">
+                              <input type="hidden" name="domain" value={dom} />
+                              <button class="btn btn-danger btn-sm" type="submit">Remove</button>
+                            </form>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div class="empty" style="padding:24px;text-align:center;border:1px dashed var(--border);border-radius:8px">
+                  <div style="display:flex;justify-content:center;margin-bottom:8px"><IconGlobeish /></div>
+                  <div style="font-weight:600;font-size:13px">No domain restrictions configured</div>
+                  <p class="t2 small" style="margin:6px 0 0">
+                    Add allowed domains above to restrict submission origins.
+                  </p>
+                </div>
+              )}
             </div>
           ) : null}
 
@@ -460,85 +526,294 @@ body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif
 .small{font-size:13px}
 `;
 
-/* ================= public landing ================= */
+/* ================= public landing =================
+   Editorial layout, not a card grid. The hero is asymmetric: the pitch sits left,
+   the integration snippet sits right — for a form backend the paste-this-HTML moment
+   *is* the product, so it gets equal billing instead of being buried below the fold.
+   Structure is carried by hairlines and type scale rather than by boxing every idea
+   in a bordered card. One ink-based palette; colour is spent almost entirely inside
+   the code panel, where it does real work. */
+
+/** A syntax-coloured run: [className, text]. An empty class renders as bare text. */
+type Tok = [string, string];
+
+const P = (s: string): Tok => ["tok-p", s];
+const T = (s: string): Tok => ["tok-t", s];
+const A = (s: string): Tok => ["tok-a", s];
+const S = (s: string): Tok => ["tok-s", `"${s}"`];
+const X = (s: string): Tok => ["", s];
+const C = (s: string): Tok => ["tok-c", s];
+
+/* Tokens render as ordinary JSX text nodes, so the renderer does the escaping and
+   `origin` can never inject markup. Lines are joined with explicit newlines rather
+   than relying on JSX to preserve source whitespace inside <pre>. */
+const snippetLines = (origin: string): Tok[][] => [
+  [P("<"), T("form"), X(" "), A("action"), P("="), S(`${origin}/f/XXXXXX`), X(" "), A("method"), P("="), S("POST"), P(">")],
+  [X("  "), P("<"), T("input"), X(" "), A("name"), P("="), S("email"), X(" "), A("type"), P("="), S("email"), X(" "), A("required"), P(">")],
+  [X("  "), P("<"), T("textarea"), X(" "), A("name"), P("="), S("message"), P("></"), T("textarea"), P(">")],
+  [],
+  [X("  "), C("<!-- bots fill this in, people don't -->")],
+  [X("  "), P("<"), T("input"), X(" "), A("name"), P("="), S("_gotcha"), X(" "), A("hidden"), P(">")],
+  [],
+  [X("  "), P("<"), T("button"), P(">"), X("Send"), P("</"), T("button"), P(">")],
+  [P("</"), T("form"), P(">")],
+];
+
+const STEPS: [string, string, string][] = [
+  ["01", "Create an endpoint", "Name a form in the dashboard. You get back a URL — that is the whole setup."],
+  ["02", "Point HTML at it", "Any form, any framework, any static host. No client library, no build step."],
+  ["03", "Own what arrives", "Submissions land in your inbox, your webhooks, your export — on your account."],
+];
+
+const SPECS: [string, string][] = [
+  ["Spam control", "Honeypot traps, per-IP rate limiting, proof-of-work, and optional Turnstile."],
+  ["Delivery", "Email notifications and HMAC-signed webhooks with a full delivery log."],
+  ["Form building", "Multi-page flows, conditional logic, save and resume, and custom themes."],
+  ["Data out", "JSON API, CSV export, and a shared inbox your team can actually work from."],
+  ["Integrity", "Hash-chained submissions and tamper-evident receipts for every response."],
+  ["Access", "Scoped sessions, per-field permissions, and an append-only audit log."],
+];
+
+const ArrowRight = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13" /><path d="m12 5 7 7-7 7" /></svg>
+);
 
 export const LandingPage: FC<{ origin: string }> = ({ origin }) => (
   <html lang="en">
     <head>
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <title>FormRelay — Forms in. Data anywhere.</title>
+      <title>FormRelay — self-hosted form backend</title>
+      <meta name="description" content="Turn any HTML form into a spam-filtered inbox with email, webhooks, and export — running entirely on your own Cloudflare account." />
       <style dangerouslySetInnerHTML={{ __html: LAND_CSS }} />
     </head>
     <body>
-      <header class="lnav">
-        <div class="bigmark">
-          <span class="logo-mark"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11.5 12 5l8 6.5"/><path d="M6 12.5v5.5h12v-5.5"/><path d="M9.5 15h5"/></svg></span>
-          <span class="wordmark">FormRelay</span>
+      <header class="nav">
+        <div class="wrap nav-in">
+          <a class="brand" href="/">
+            <span class="brand-mark">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11.5 12 5l8 6.5" /><path d="M6 12.5v5.5h12v-5.5" /><path d="M9.5 15h5" /></svg>
+            </span>
+            <span class="brand-name">FormRelay</span>
+          </a>
+          <a class="btn btn-ghost btn-sm" href="/admin">Open dashboard</a>
         </div>
-        <a class="btn-secondary" href="/admin">Open dashboard</a>
       </header>
 
-      <main class="land">
-        <h1>Forms in.<br />Data anywhere.</h1>
-        <p class="tagline">
-          A free, self-hosted form backend. Point any HTML form at an endpoint — get spam-filtered
-          submissions, email notifications, webhooks, and CSV export. Your data stays yours.
-        </p>
-        <div class="land-actions">
-          <a class="btn-primary" href="/admin">Create a form</a>
-          <a class="btn-secondary" href="#quickstart">See it work</a>
+      <main>
+        <div class="wrap">
+          <section class="hero">
+            <h1>
+              Ship a form<br />
+              <span class="h1-dim">without shipping a backend.</span>
+            </h1>
+            <div class="hero-body">
+              <div class="hero-copy">
+                <p class="lede">
+                FormRelay turns any HTML form into a spam-filtered inbox with email
+                notifications, signed webhooks, and one-click export — running entirely on
+                  your own Cloudflare account. No third party ever holds your submissions.
+                </p>
+                <div class="cta">
+                  <a class="btn btn-ink" href="/admin">Create a form <ArrowRight /></a>
+                  <a class="btn btn-ghost" href="#how">How it works</a>
+                </div>
+                <p class="fineprint">Deploys in about five minutes on Cloudflare's free tier.</p>
+              </div>
+
+            <div class="panel">
+              <div class="panel-bar">
+                <span class="verb">POST</span>
+                <span class="panel-path">{origin}/f/XXXXXX</span>
+              </div>
+              <pre class="code" aria-label="Example HTML form pointed at a FormRelay endpoint"><code>
+                {snippetLines(origin).map((line, i) => (
+                  <>
+                    {i ? "\n" : ""}
+                    {line.map(([cls, text]) => (cls ? <span class={cls}>{text}</span> : text))}
+                  </>
+                ))}
+              </code></pre>
+              </div>
+            </div>
+          </section>
         </div>
-        <div class="trust-strip"><span>Self-hosted</span><span>Open source</span><span>Cloudflare-native</span><span>No vendor lock-in</span></div>
 
-        <section class="capability-grid" aria-label="Platform capabilities">
-          <article class="capability capability-wide"><span class="eyebrow">01 · Capture</span><h2>Build forms people actually finish.</h2><p>Multi-page, conversational, conditional, branded, and resumable — without making respondents fight your UI.</p><div class="pill-row"><span>Smart logic</span><span>Save &amp; resume</span><span>Custom themes</span></div></article>
-          <article class="capability"><span class="eyebrow">02 · Protect</span><h3>Trust built in.</h3><p>Honeypots, rate limits, Turnstile, signed webhooks, scoped sessions, and server-side validation.</p></article>
-          <article class="capability"><span class="eyebrow">03 · Route</span><h3>Data where work happens.</h3><p>Notifications, retries, workflow steps, provider adapters, JSON export, and an inbox for your team.</p></article>
-        </section>
+        <div class="wrap">
+          <section id="how" class="band">
+            <p class="band-label">How it works</p>
+            <ol class="steps">
+              {STEPS.map(([n, title, body]) => (
+                <li class="step">
+                  <span class="step-n">{n}</span>
+                  <h3>{title}</h3>
+                  <p>{body}</p>
+                </li>
+              ))}
+            </ol>
+          </section>
 
-        <section id="quickstart" class="land-code">
-          <pre>{`<form action="${origin}/f/XXXXXX" method="POST">
-  <input type="text" name="name" required>
-  <input type="email" name="email" required>
-  <textarea name="message"></textarea>
-
-  <!-- honeypot spam trap -->
-  <input type="text" name="_gotcha" style="display:none">
-
-  <button>Send</button>
-</form>`}</pre>
-        </section>
-
-        <section class="feats">
-          <div class="feat"><span class="feat-no">A</span><h3>Endpoints, not plumbing</h3><p>Create a form, copy one URL, paste it into any HTML — no server code anywhere.</p></div>
-          <div class="feat"><span class="feat-no">B</span><h3>Spam stays out</h3><p>Honeypot traps, per-IP rate limiting, and optional Cloudflare Turnstile — built in.</p></div>
-          <div class="feat"><span class="feat-no">C</span><h3>Data goes anywhere</h3><p>Email notifications, signed webhooks, JSON API, CSV export. Runs entirely on Cloudflare's free tier.</p></div>
-        </section>
+          <section class="band">
+            <p class="band-label">What you get</p>
+            <dl class="specs">
+              {SPECS.map(([term, body]) => (
+                <div class="spec">
+                  <dt>{term}</dt>
+                  <dd>{body}</dd>
+                </div>
+              ))}
+            </dl>
+          </section>
+        </div>
       </main>
 
-      <footer class="lfoot">FormRelay — self-hosted, MIT-spirited, quietly powerful.</footer>
+      <footer class="foot">
+        <div class="wrap foot-in">
+          <span>FormRelay — self-hosted forms on Cloudflare Workers.</span>
+          <a href="/admin">Dashboard</a>
+        </div>
+      </footer>
     </body>
   </html>
 );
 
 const LAND_CSS = String.raw`
-body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#fff;color:#37352f;-webkit-font-smoothing:antialiased;line-height:1.55}
-.lnav{position:fixed;top:0;left:0;right:0;display:flex;justify-content:space-between;align-items:center;padding:14px 28px;background:rgba(255,255,255,.85);backdrop-filter:blur(6px);border-bottom:1px solid #e9e9e7;z-index:10}
-.logo-mark{width:26px;height:26px;border-radius:6px;background:#37352f;color:#fff;display:inline-flex;align-items:center;justify-content:center}
-.wordmark{font-weight:650;font-size:15px}
-.land{max-width:800px;margin:0 auto;padding:130px 24px 40px;text-align:center}
-.land h1{font-size:46px;font-weight:700;letter-spacing:-.03em;line-height:1.08;margin:0}
-.tagline{font-size:16.5px;color:#787774;max-width:560px;margin:18px auto 30px}
-.land-actions{display:flex;gap:10px;justify-content:center;margin-bottom:24px}
-.trust-strip{display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin:0 auto 52px;color:#9b9a97;font-size:11px;text-transform:uppercase;letter-spacing:.08em}.trust-strip span{border:1px solid #e9e9e7;border-radius:999px;padding:5px 10px;background:#fff}
-.capability-grid{display:grid;grid-template-columns:1.35fr 1fr 1fr;gap:12px;text-align:left;margin:0 0 24px}.capability{border:1px solid #e9e9e7;border-radius:12px;padding:22px;background:#fff;min-height:168px;box-shadow:0 8px 24px rgba(55,53,47,.04)}.capability-wide{background:#f7faff;border-color:#dbeafe}.eyebrow{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#2383e2;font-weight:650}.capability h2{font-size:22px;line-height:1.18;letter-spacing:-.02em;margin:14px 0 8px}.capability h3{font-size:15px;margin:14px 0 8px}.capability p{font-size:13px;color:#787774;margin:0}.pill-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:18px}.pill-row span{font-size:11px;color:#4b5563;background:#fff;border:1px solid #dbeafe;border-radius:999px;padding:4px 8px}
-.btn-primary{background:#2383e2;color:#fff;border:none;border-radius:6px;font:inherit;font-size:14px;font-weight:550;padding:9px 18px;cursor:pointer;text-decoration:none;display:inline-block}
-.btn-primary:hover{background:#1b74ca}
-.btn-secondary{background:#fff;border:1px solid #dededb;color:#37352f;border-radius:6px;font:inherit;font-size:14px;font-weight:500;padding:8px 16px;cursor:pointer;text-decoration:none;display:inline-block}
-.btn-secondary:hover{background:#f7f7f5}
-.land-code pre{text-align:left;background:#f7f7f5;border:1px solid #e9e9e7;border-radius:10px;padding:22px 26px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.8px;line-height:1.65;overflow-x:auto}
-.feats{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:28px;text-align:left;margin-top:56px}.feat-no{display:inline-flex;width:22px;height:22px;border-radius:7px;background:#f1f1ef;color:#787774;align-items:center;justify-content:center;font-size:11px;font-weight:650;margin-bottom:12px}.feat h3{font-size:14.5px;margin:0 0 6px}.feat p{font-size:13.5px;color:#787774;margin:0}
-@media(max-width:700px){.lnav{padding:12px 16px}.land{padding:112px 18px 28px}.land h1{font-size:40px}.tagline{font-size:15px}.capability-grid{grid-template-columns:1fr}.capability-wide{min-height:0}.land-code pre{font-size:11px;padding:16px}.trust-strip{margin-bottom:34px}}
-.lfoot{text-align:center;color:#9b9a97;font-size:12.5px;padding:32px 16px 48px}
+*,*::before,*::after{box-sizing:border-box}
+
+:root{
+  --paper:#fff;
+  --paper-2:#f7f7f6;
+  --veil:rgba(255,255,255,.78);
+  --ink:#15161a;
+  --ink-hover:#000;
+  --ink-2:#5d606b;
+  --ink-3:#8e909b;
+  --line:rgba(20,21,26,.11);
+  --line-2:rgba(20,21,26,.07);
+  --line-strong:rgba(20,21,26,.16);
+  --code-bg:#15171e;
+  --panel-edge:rgba(255,255,255,.09);
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  color-scheme:light;
+}
+
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#0e0f13;
+    --paper-2:#16181e;
+    --veil:rgba(14,15,19,.78);
+    --ink:rgba(255,255,255,.93);
+    --ink-hover:#fff;
+    --ink-2:rgba(255,255,255,.62);
+    --ink-3:rgba(255,255,255,.44);
+    --line:rgba(255,255,255,.12);
+    --line-2:rgba(255,255,255,.07);
+    --line-strong:rgba(255,255,255,.2);
+    --code-bg:#191d26;
+    --panel-edge:rgba(255,255,255,.14);
+    color-scheme:dark;
+  }
+}
+
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;background:var(--paper);color:var(--ink);
+  font-family:var(--font);font-size:15px;line-height:1.6;
+  -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
+  overflow-x:hidden;
+}
+a{color:inherit}
+::selection{background:var(--ink);color:var(--paper)}
+
+.wrap{max-width:1080px;margin:0 auto;padding:0 clamp(20px,4vw,32px);width:100%}
+
+/* ---- nav ---- */
+.nav{position:sticky;top:0;z-index:20;background:var(--veil);backdrop-filter:saturate(180%) blur(12px);border-bottom:1px solid var(--line-2)}
+.nav-in{display:flex;align-items:center;justify-content:space-between;height:58px}
+.brand{display:inline-flex;align-items:center;gap:9px;text-decoration:none}
+.brand-mark{width:25px;height:25px;border-radius:7px;background:var(--ink);color:var(--paper);display:inline-flex;align-items:center;justify-content:center;flex:none}
+.brand-name{font-size:14.5px;font-weight:600;letter-spacing:-.01em}
+
+/* ---- buttons ---- */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:40px;padding:0 17px;border-radius:9px;font-size:14px;font-weight:500;letter-spacing:-.005em;text-decoration:none;white-space:nowrap;transition:background 140ms ease,border-color 140ms ease,color 140ms ease}
+.btn-sm{height:32px;padding:0 13px;font-size:13.5px;border-radius:8px}
+.btn-ink{background:var(--ink);color:var(--paper)}
+.btn-ink:hover{background:var(--ink-hover)}
+.btn-ghost{border:1px solid var(--line-strong);color:var(--ink)}
+.btn-ghost:hover{background:var(--paper-2)}
+.btn:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+
+/* ---- hero ---- */
+.hero{padding:clamp(52px,8vw,92px) 0 clamp(44px,6vw,72px)}
+.hero-body{
+  display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.06fr);
+  gap:clamp(30px,4.5vw,56px);align-items:start;
+  margin-top:clamp(28px,4vw,44px);
+}
+h1{
+  margin:0;font-size:clamp(38px,6vw,72px);line-height:1.02;
+  letter-spacing:-.042em;font-weight:600;
+}
+.h1-dim{color:var(--ink-3)}
+.lede{margin:0;max-width:44ch;font-size:15.5px;line-height:1.62;color:var(--ink-2)}
+.cta{display:flex;flex-wrap:wrap;gap:10px;margin-top:28px}
+.fineprint{margin:16px 0 0;font-size:13px;color:var(--ink-3)}
+
+/* ---- code panel ---- */
+.panel{
+  border-radius:13px;background:var(--code-bg);overflow:hidden;min-width:0;
+  border:1px solid var(--panel-edge);
+  box-shadow:0 28px 60px -28px rgba(12,14,22,.42),0 2px 6px rgba(12,14,22,.10);
+}
+.panel-bar{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid rgba(255,255,255,.08);min-width:0}
+.verb{flex:none;font:600 10px/1 var(--mono);letter-spacing:.09em;padding:5px 7px;border-radius:5px;background:rgba(122,162,247,.16);color:#7aa2f7}
+.panel-path{font:12px/1.4 var(--mono);color:#7f869f;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.code{margin:0;padding:18px 16px 20px;overflow-x:auto;font:13px/1.75 var(--mono);color:#c6cde6;tab-size:2}
+.code code{font:inherit}
+.tok-t{color:#7aa2f7}
+.tok-a{color:#e0af68}
+.tok-s{color:#9ece6a}
+.tok-p{color:#6b7391}
+.tok-c{color:#5b6382;font-style:italic}
+
+/* ---- bands ---- */
+.band{padding:clamp(44px,6vw,68px) 0 0}
+.band-label{margin:0 0 26px;font:500 11px/1 var(--mono);letter-spacing:.13em;text-transform:uppercase;color:var(--ink-3)}
+
+.steps{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-top:1px solid var(--line)}
+.step{padding:26px 30px 4px;border-left:1px solid var(--line-2);min-width:0}
+.step:first-child{border-left:0;padding-left:0}
+.step-n{font:500 11px/1 var(--mono);letter-spacing:.12em;color:var(--ink-3)}
+.step h3{margin:13px 0 7px;font-size:15px;font-weight:600;letter-spacing:-.012em}
+.step p{margin:0;font-size:13.5px;line-height:1.62;color:var(--ink-2)}
+
+.specs{margin:0;padding:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:clamp(32px,5vw,64px);border-top:1px solid var(--line)}
+.spec{display:grid;grid-template-columns:132px minmax(0,1fr);gap:18px;padding:17px 0;border-bottom:1px solid var(--line-2);align-items:baseline}
+.spec dt{font-size:13.5px;font-weight:600;letter-spacing:-.01em}
+.spec dd{margin:0;font-size:13.5px;line-height:1.6;color:var(--ink-2)}
+
+/* ---- footer ---- */
+.foot{margin-top:clamp(56px,8vw,88px);border-top:1px solid var(--line-2);background:var(--paper-2)}
+.foot-in{display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;padding:24px 0;font-size:13px;color:var(--ink-3)}
+.foot-in a{text-decoration:none}
+.foot-in a:hover{color:var(--ink)}
+
+/* ---- responsive ---- */
+@media (max-width:940px){
+  .hero-body{grid-template-columns:minmax(0,1fr);gap:32px}
+  .lede{max-width:58ch}
+  .steps{grid-template-columns:minmax(0,1fr)}
+  .step{border-left:0;padding:22px 0 4px;border-bottom:1px solid var(--line-2)}
+  .step:last-child{border-bottom:0}
+  .specs{grid-template-columns:minmax(0,1fr)}
+}
+@media (max-width:560px){
+  .spec{grid-template-columns:minmax(0,1fr);gap:5px}
+  .code{font-size:12px}
+  .cta .btn{flex:1 1 auto}
+}
+@media (prefers-reduced-motion:reduce){
+  *{transition-duration:.01ms !important;animation-duration:.01ms !important}
+}
 `;

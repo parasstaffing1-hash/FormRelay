@@ -168,8 +168,19 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
   status_code INTEGER,
   ok INTEGER NOT NULL,
   detail TEXT NOT NULL DEFAULT '',
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  -- Retry state. payload is held only while a delivery is still owed, then dropped.
+  attempts INTEGER NOT NULL DEFAULT 1,
+  next_attempt_at INTEGER,
+  payload TEXT,
+  submission_id INTEGER
 );
+CREATE INDEX IF NOT EXISTS idx_deliveries_due
+  ON webhook_deliveries (next_attempt_at)
+  WHERE next_attempt_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_deliveries_submission
+  ON webhook_deliveries (submission_id)
+  WHERE submission_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_deliveries_wh ON webhook_deliveries (webhook_id, created_at DESC);
 

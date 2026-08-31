@@ -89,6 +89,68 @@ export async function setSetting(db: D1Database, key: string, value: string): Pr
   await db.prepare("INSERT INTO settings_kv (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(key,value).run();
 }
 
+export type AllowedDomainsConfig = {
+  enforced: boolean;
+  domains: string[];
+};
+
+export async function getAllowedDomains(db: D1Database): Promise<AllowedDomainsConfig> {
+  const raw = await getSetting(db, "allowed_domains");
+  if (!raw) return { enforced: false, domains: [] };
+  try {
+    const parsed = JSON.parse(raw) as Partial<AllowedDomainsConfig>;
+    return {
+      enforced: !!parsed.enforced,
+      domains: Array.isArray(parsed.domains)
+        ? parsed.domains.filter((d): d is string => typeof d === "string" && d.trim().length > 0).map((d) => d.trim().toLowerCase())
+        : [],
+    };
+  } catch {
+    return { enforced: false, domains: [] };
+  }
+}
+
+export async function saveAllowedDomains(db: D1Database, config: AllowedDomainsConfig): Promise<void> {
+  await setSetting(
+    db,
+    "allowed_domains",
+    JSON.stringify({
+      enforced: config.enforced,
+      domains: config.domains.map((d) => d.trim().toLowerCase()).filter(Boolean),
+    })
+  );
+}
+
+export function isOriginAllowed(originOrReferer: string | null | undefined, config: AllowedDomainsConfig): boolean {
+  if (!config.enforced || config.domains.length === 0) return true;
+  if (!originOrReferer) return false;
+  try {
+    let urlString = originOrReferer.trim();
+    if (!/^https?:\/\//i.test(urlString)) {
+      urlString = `http://${urlString}`;
+    }
+    const parsed = new URL(urlString);
+    const host = parsed.host.toLowerCase();
+    const hostname = parsed.hostname.toLowerCase();
+
+    for (const pattern of config.domains) {
+      const p = pattern.trim().toLowerCase();
+      if (p === "*" || p === host || p === hostname) return true;
+      if (p.startsWith("*.")) {
+        const root = p.slice(2);
+        if (hostname === root || hostname.endsWith(`.${root}`)) return true;
+      }
+      if (p.startsWith(".")) {
+        const root = p.slice(1);
+        if (hostname === root || hostname.endsWith(`.${root}`)) return true;
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 export async function listForms(db: D1Database): Promise<FormRow[]> {
   const { results } = await db.prepare("SELECT * FROM forms ORDER BY created_at DESC").all<FormRow>();
   return results ?? [];
@@ -295,6 +357,8 @@ export async function getSubmission(db: D1Database, id: number): Promise<Submiss
 }
 
 export async function deleteSubmission(db: D1Database, id: number): Promise<void> {
+  // Same reasoning as erasure: drop any retry still holding this payload.
+  await clearQueuedPayloadsForSubmission(db, id);
   await db.prepare("DELETE FROM submissions WHERE id = ?").bind(id).run();
 }
 
@@ -476,22 +540,124 @@ export async function setWebhookActive(db: D1Database, id: string, active: boole
   await db.prepare("UPDATE webhooks SET active = ? WHERE id = ?").bind(active ? 1 : 0, id).run();
 }
 
+export async function rotateWebhookSecret(db: D1Database, id: string, newSecret?: string): Promise<string> {
+  const secret = newSecret || randomSecret();
+  await db.prepare("UPDATE webhooks SET secret = ? WHERE id = ?").bind(secret, id).run();
+  return secret;
+}
+
 export async function deleteWebhook(db: D1Database, id: string): Promise<void> {
   await db.prepare("DELETE FROM webhook_deliveries WHERE webhook_id = ?").bind(id).run();
   await db.prepare("DELETE FROM webhooks WHERE id = ?").bind(id).run();
 }
 
-export async function recordDelivery(
+export type DeliveryRecord = {
+  webhookId: string;
+  event: string;
+  statusCode: number | null;
+  ok: boolean;
+  detail: string;
+  submissionId: number | null;
+  /** Retained only while a retry is still owed; null once delivered or exhausted. */
+  payload: string | null;
+  nextAttemptAt: number | null;
+};
+
+export async function recordDelivery(db: D1Database, rec: DeliveryRecord): Promise<void> {
+  await db
+    .prepare(
+      "INSERT INTO webhook_deliveries (webhook_id, event, status_code, ok, detail, created_at, attempts, next_attempt_at, payload, submission_id) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)"
+    )
+    .bind(
+      rec.webhookId,
+      rec.event,
+      rec.statusCode,
+      rec.ok ? 1 : 0,
+      rec.detail.slice(0, 500),
+      Date.now(),
+      rec.nextAttemptAt,
+      rec.payload,
+      rec.submissionId
+    )
+    .run();
+}
+
+export type DueDelivery = {
+  id: number;
+  webhook_id: string;
+  event: string;
+  attempts: number;
+  payload: string | null;
+  url: string | null;
+  secret: string | null;
+};
+
+/**
+ * Due retries, joined to their webhook so the sweeper has somewhere to POST. A hook
+ * that was deleted or disabled since the failure yields a null url and gets dropped
+ * rather than retried forever.
+ */
+export async function claimDueDeliveries(db: D1Database, now: number, limit: number): Promise<DueDelivery[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT d.id, d.webhook_id, d.event, d.attempts, d.payload,
+              CASE WHEN w.active = 1 THEN w.url ELSE NULL END AS url,
+              w.secret AS secret
+         FROM webhook_deliveries d
+         LEFT JOIN webhooks w ON w.id = d.webhook_id
+        WHERE d.next_attempt_at IS NOT NULL AND d.next_attempt_at <= ?
+        ORDER BY d.next_attempt_at ASC
+        LIMIT ?`
+    )
+    .bind(now, limit)
+    .all<DueDelivery>();
+  return results ?? [];
+}
+
+/** Terminal state: delivered or out of attempts. Drops the stored payload either way. */
+export async function settleDelivery(
   db: D1Database,
-  webhookId: string,
-  event: string,
+  id: number,
   statusCode: number | null,
   ok: boolean,
   detail: string
 ): Promise<void> {
   await db
-    .prepare("INSERT INTO webhook_deliveries (webhook_id, event, status_code, ok, detail, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-    .bind(webhookId, event, statusCode, ok ? 1 : 0, detail.slice(0, 500), Date.now())
+    .prepare(
+      "UPDATE webhook_deliveries SET ok = ?, status_code = ?, detail = ?, next_attempt_at = NULL, payload = NULL WHERE id = ?"
+    )
+    .bind(ok ? 1 : 0, statusCode, detail.slice(0, 500), id)
+    .run();
+}
+
+/** Failed again, but attempts remain: bump the counter and push the schedule out. */
+export async function scheduleRetry(
+  db: D1Database,
+  id: number,
+  attempts: number,
+  nextAt: number,
+  statusCode: number | null,
+  detail: string
+): Promise<void> {
+  await db
+    .prepare(
+      "UPDATE webhook_deliveries SET attempts = ?, next_attempt_at = ?, status_code = ?, detail = ? WHERE id = ?"
+    )
+    .bind(attempts, nextAt, statusCode, detail.slice(0, 500), id)
+    .run();
+}
+
+/**
+ * Erasure hook. A queued retry still holds a verbatim copy of the submission, so an
+ * erasure that ignored it would leave the data alive in the delivery queue for up to
+ * a day -- and then hand it to a third party.
+ */
+export async function clearQueuedPayloadsForSubmission(db: D1Database, submissionId: number): Promise<void> {
+  await db
+    .prepare(
+      "UPDATE webhook_deliveries SET payload = NULL, next_attempt_at = NULL, detail = 'cancelled: submission erased' WHERE submission_id = ? AND next_attempt_at IS NOT NULL"
+    )
+    .bind(submissionId)
     .run();
 }
 
@@ -730,10 +896,19 @@ export async function getSubmissionByReceiptHash(db: D1Database, tokenHash: stri
  */
 export async function eraseSubmissionByReceipt(db: D1Database, tokenHash: string): Promise<boolean> {
   const now = Date.now();
+  // Resolve the id first: a queued webhook retry holds a verbatim copy of this
+  // submission, and erasing only the row would leave that copy alive in the queue --
+  // and then hand it to a third party on the next sweep.
+  const target = await db
+    .prepare("SELECT id FROM submissions WHERE receipt_token_hash = ? AND erased_at IS NULL")
+    .bind(tokenHash)
+    .first<{ id: number }>();
   const result = await db.prepare(
     "UPDATE submissions SET data = '{}', ip = '', user_agent = '', referer = '', note = '', tags_json = '[]', erased_at = ?, updated_at = ? WHERE receipt_token_hash = ? AND erased_at IS NULL"
   ).bind(now, now, tokenHash).run();
-  return !!result.meta?.changes;
+  const erased = !!result.meta?.changes;
+  if (erased && target) await clearQueuedPayloadsForSubmission(db, target.id);
+  return erased;
 }
 
 export async function setFormPrefillSignedOnly(db: D1Database, formId: string, on: boolean): Promise<void> {
@@ -832,5 +1007,32 @@ export async function resealChain(db: D1Database): Promise<{ count: number; head
 
 export async function runReadOnlyQuery(db: D1Database, sql: string): Promise<Record<string, unknown>[]> {
   const { results } = await db.prepare(sql).all<Record<string, unknown>>();
+  return results ?? [];
+}
+
+/**
+ * Rows behind the insights page. Spam and erased submissions are excluded: spam would
+ * invent drop-off from bots that never intended to finish, and an erased row has an
+ * empty payload that would read as abandonment at the first question.
+ *
+ * Capped rather than unbounded — the funnel is computed in the Worker, and a form with a
+ * million responses should not try to load them all into an isolate.
+ */
+export async function getInsightRows(
+  db: D1Database,
+  formId: string,
+  sinceMs: number,
+  limit = 5000
+): Promise<{ status: string; data: string; created_at: number; completed_at: number | null; user_agent: string }[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT status, data, created_at, completed_at, user_agent
+         FROM submissions
+        WHERE form_id = ? AND created_at >= ? AND is_spam = 0 AND erased_at IS NULL
+        ORDER BY created_at DESC
+        LIMIT ?`
+    )
+    .bind(formId, sinceMs, limit)
+    .all<{ status: string; data: string; created_at: number; completed_at: number | null; user_agent: string }>();
   return results ?? [];
 }

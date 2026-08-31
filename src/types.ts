@@ -91,6 +91,9 @@ export type DeliveryRow = {
   ok: number;
   detail: string;
   created_at: number;
+  attempts: number;
+  /** Non-null while a retry is still owed. */
+  next_attempt_at: number | null;
 };
 
 export type FormVersionRow = { id: number; form_id: string; schema_json: string; published_json?: string | null; created_at: number; created_by: string };

@@ -8,7 +8,7 @@
 - **File uploads** — multipart attachments stored in Cloudflare R2 when a binding named `FILES` is configured (gracefully degrades to `[file: name]` text without it)
 - **Spam protection** — honeypot fields (`_gotcha`/`_honeypot`/`_hp`), per-IP rate limit (10/min), optional Cloudflare Turnstile
 - **Email** — per-form notifications + optional auto-reply to the submitter via Resend
-- **Webhooks** — HMAC-SHA256 signed payloads (`whsec_…` secrets), delivery history with status codes, one-click test sends
+- **Webhooks** — HMAC-SHA256 signed payloads (`whsec_…` secrets), automatic retries with backoff, delivery history with status codes, one-click test sends
 - **Submissions inbox** — global browser with form/spam filters, detail view with metadata and raw JSON
 - **CSV export** per form
 - **Forms management** — create, rename, duplicate, archive, delete; per-form redirect URL
@@ -100,6 +100,33 @@ Fields starting with `_` are control fields — stripped before storage.
 | `_replyto` | Reply-to address; also the auto-reply target if no `email` field |
 | `_redirect` | Per-submission redirect URL (falls back to form setting) |
 
+## Insights
+
+`/admin/forms/:id/insights` (linked as **Insights** in the builder toolbar) answers the
+question plain counts cannot: *where do people give up?*
+
+- **Drop-off by question** — for each field, how many respondents reached it and how many
+  stopped there. A respondent counts as having *reached* the question after their last
+  answer, not at it: someone who fills name and email then leaves saw the next question
+  and refused it, and that is the field worth fixing.
+- **Completion rate and median time** — median rather than mean, because one abandoned tab
+  left open overnight drags a mean into meaninglessness.
+- **Answer distribution** for choice fields. Multi-select answers are split, so `A, B`
+  counts toward `A` and `B` rather than inventing a third option.
+- **Device split** — three coarse buckets, enough to answer "does this work on phones"
+  without fingerprinting anyone.
+
+Spam and erased submissions are excluded: spam would invent abandonment from bots that
+never meant to finish, and an erased row has an empty payload that reads as quitting at
+question one.
+
+The headline finding stays silent below ten respondents on a question. A 100% drop rate
+off two people is noise, and presenting it as a finding sends someone rewriting a
+question for no reason.
+
+All of it derives from data already stored on each submission — no extra tracking, no
+third-party script, nothing new collected.
+
 ## Webhooks
 
 Attach a webhook to any form (dashboard → Webhooks). Each gets an auto-generated `whsec_…` secret.
@@ -123,6 +150,25 @@ Verify it:
 
 - Header `X-FormRelay-Event`: event name (`submission.created`, or `webhook.test`)
 - Header `X-FormRelay-Signature`: `sha256=<hex>` — HMAC-SHA256 of the raw request body using your webhook secret
+
+### Retries
+
+A delivery that fails is retried on a backoff of 1m, 5m, 15m, 1h, 6h, 24h — seven
+attempts in total — driven by the Cron Trigger in `wrangler.toml`. **Without that trigger
+deployed, nothing retries**, so keep the `[triggers]` block when you edit the config.
+
+Only transport failures, timeouts, `408`, `429`, and `5xx` are retried. Any other `4xx`
+means your endpoint read the payload and refused it, so retrying would change nothing;
+those are marked failed immediately.
+
+While a retry is outstanding the delivery row holds a verbatim copy of the submission.
+It is dropped the moment the delivery succeeds or runs out of attempts, and erasing or
+deleting a submission cancels any retry still holding it — so the queue never becomes a
+second, longer-lived copy of respondent data.
+
+Delivery history shows `Retrying` alongside the attempt count while a backlog is
+draining. To exercise the sweeper locally, run `npm run dev` and hit
+`http://localhost:8787/__scheduled?cron=*/5+*+*+*+*`.
 
 Management: pause/resume (toggle active), delete, delivery history (last 25 attempts with status codes and errors), and **Send test** to fire a sample payload.
 

@@ -91,7 +91,13 @@ import {
   setSubmissionData,
   resealChain,
   runReadOnlyQuery,
+  getInsightRows,
+  rotateWebhookSecret,
+  getAllowedDomains,
+  saveAllowedDomains,
+  isOriginAllowed,
 } from "./db";
+import { generateQrSvg } from "./qr";
 import apiApp from "./api";
 import { spillIfLarge, resolveSpilledData } from "./spill";
 import { parseSchema, emptySchema, validateBlockValue, isSchemaV2 } from "./blocks";
@@ -108,7 +114,7 @@ import { BuilderPage, BUILDER_JS } from "./pages/builder";
 import { audit } from "./audit";
 import { sendNotification, sendAutoReply } from "./email";
 import { checkSpam, normalizePayload } from "./spam";
-import { deliverSubmission, sendTestWebhook } from "./webhooks";
+import { deliverSubmission, sendTestWebhook, sweepRetries } from "./webhooks";
 import { getFiles, countFiles, totalStorage, getFile, saveUpload, deleteFile } from "./files";
 import { CLIENT_JS_WITH_GUARDS, GUARDS_JS } from "./ui/client";
 import { CSS } from "./ui/styles";
@@ -121,6 +127,8 @@ import { InboxPage } from "./pages/inbox";
 import { SubmissionDetailPage } from "./pages/submission-detail";
 import { WebhooksPage, WebhookDetailPage, ComingSoonPage } from "./pages/webhook-pages";
 import { WorkflowsPage, FilesPage, SettingsPage, SettingsSection, LoginPage, LandingPage } from "./pages/misc";
+import { InsightsPage } from "./pages/insights";
+import { fieldFunnel, completionStats, answerDistribution, deviceBreakdown, Respondent, InsightBlock } from "./insights";
 import { templateSchema, TemplateKey } from "./templates";
 
 const COOKIE = "fr_session";
@@ -372,14 +380,26 @@ app.get("/assets/pow.js", () => new Response(POW_CLIENT_JS, { headers: JS_HEADER
 
 /* ---------- public submit endpoint (preserved) ---------- */
 
-const CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
-};
+async function getCorsHeaders(db: D1Database, reqOrigin: string | undefined): Promise<Record<string, string>> {
+  const allowed = await getAllowedDomains(db);
+  let allowOrigin = "*";
+  if (allowed.enforced && allowed.domains.length > 0) {
+    if (reqOrigin && isOriginAllowed(reqOrigin, allowed)) {
+      allowOrigin = reqOrigin;
+    } else {
+      allowOrigin = "null";
+    }
+  }
+  return {
+    "Access-Control-Allow-Origin": allowOrigin,
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-FormRelay-Signature",
+    "Vary": "Origin",
+  };
+}
 
-app.on("OPTIONS", "/f/:id/*", (c) => new Response(null, { status: 204, headers: CORS_HEADERS }));
-app.on("OPTIONS", "/f/:id", (c) => new Response(null, { status: 204, headers: CORS_HEADERS }));
+app.on("OPTIONS", "/f/:id/*", async (c) => new Response(null, { status: 204, headers: await getCorsHeaders(c.env.DB, c.req.header("origin")) }));
+app.on("OPTIONS", "/f/:id", async (c) => new Response(null, { status: 204, headers: await getCorsHeaders(c.env.DB, c.req.header("origin")) }));
 
 function stripControlFields(data: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
@@ -391,6 +411,12 @@ function stripControlFields(data: Record<string, string>): Record<string, string
 
 app.post("/f/:id/save", async (c) => {
   const formId = c.req.param("id");
+  const allowedDomainsConfig = await getAllowedDomains(c.env.DB);
+  const reqOrigin = c.req.header("origin") || c.req.header("referer");
+  if (allowedDomainsConfig.enforced && !isOriginAllowed(reqOrigin, allowedDomainsConfig)) {
+    return c.json({ ok: false, error: "Submissions from this origin are not allowed." }, 403);
+  }
+
   const form = await getForm(c.env.DB, formId);
   const schema = parseSchema(form?.published_json);
   if (!form || !schema || !isSchemaV2(schema)) return c.json({ ok: false, error: "Save and resume is not enabled for this form." }, 400);
@@ -422,6 +448,12 @@ app.post("/f/:id/save", async (c) => {
 app.post("/f/:id", async (c) => {
   const formId = c.req.param("id");
   const contentType = c.req.header("content-type") || "";
+
+  const allowedDomainsConfig = await getAllowedDomains(c.env.DB);
+  const reqOrigin = c.req.header("origin") || c.req.header("referer");
+  if (allowedDomainsConfig.enforced && !isOriginAllowed(reqOrigin, allowedDomainsConfig)) {
+    return c.text("Forbidden: Submissions from this origin are not allowed.", 403);
+  }
 
   const form = await getForm(c.env.DB, formId);
   if (!form) return c.text("Unknown form endpoint", 404);
@@ -1068,6 +1100,67 @@ app.get("/admin/forms/:id/health", async (c) => {
   return c.html(<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Health · {form.name}</title><style dangerouslySetInnerHTML={{ __html: CSS }} /></head><body style="font-family:system-ui;max-width:720px;margin:40px auto;padding:0 20px"><p><a href={`/admin/forms/${form.id}/build`}>← Back to builder</a></p><h1>Form health</h1><p>{form.name} · <strong>{tone}</strong></p><ul>{items.map((item) => <li style={`margin:8px 0;color:${item.level === "error" ? "#b42318" : item.level === "warning" ? "#9a6700" : "#18794e"}`}>{item.level.toUpperCase()}: {item.message}</li>)}</ul></body></html>);
 });
 
+/* Insights: the "why not" half of analytics. Reads the published schema so the funnel
+   follows the form respondents actually saw, not an unpublished draft. */
+app.get("/admin/forms/:id/insights", async (c) => {
+  const form = await getForm(c.env.DB, c.req.param("id"));
+  if (!form) return c.notFound();
+
+  const requested = Number(new URL(c.req.url).searchParams.get("days"));
+  const days = [7, 30, 90].includes(requested) ? requested : 30;
+
+  // An unpublished form has no live schema; the page then has no questions to walk and
+  // renders its empty state rather than 500ing.
+  const schema = parseSchema(form.published_json);
+  const blocks: InsightBlock[] = (schema?.blocks ?? [])
+    .filter((b) => b.type !== "heading" && b.type !== "paragraph")
+    .map((b) => ({ id: b.id, type: b.type, label: b.label }));
+
+  const rows = await getInsightRows(c.env.DB, form.id, Date.now() - days * 86400000);
+  const respondents: Respondent[] = rows.map((row) => {
+    let data: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(row.data || "{}");
+      if (parsed && typeof parsed === "object") data = parsed as Record<string, unknown>;
+    } catch {
+      // A payload we cannot parse contributes no answers rather than failing the page.
+    }
+    return {
+      status: row.status,
+      data,
+      createdAt: row.created_at,
+      completedAt: row.completed_at,
+      userAgent: row.user_agent ?? "",
+    };
+  });
+
+  const steps = fieldFunnel(blocks, respondents);
+  const stats = completionStats(respondents);
+  const devices = deviceBreakdown(respondents);
+  const CHOICE_TYPES = ["select", "radio", "checkbox", "checkbox_choice", "rating"];
+  const distributions = blocks
+    .filter((b) => CHOICE_TYPES.includes(b.type))
+    .map((block) => ({ block, slices: answerDistribution(block, respondents) }))
+    .filter((d) => d.slices.length > 0);
+
+  const dash = await getDashboardStats(c.env.DB);
+  return c.html(
+    <InsightsPage
+      path={new URL(c.req.url).pathname}
+      form={form}
+      steps={steps}
+      stats={stats}
+      distributions={distributions}
+      devices={devices}
+      days={days}
+      toastMsg={msgFrom(c)}
+      commands={baseCommands(originOf(c.req.url))}
+      formCount={dash.form_count}
+      submissionCount={dash.submission_count}
+    />
+  );
+});
+
 app.get("/admin/forms/:id/versions", async (c) => {
   const form = await getForm(c.env.DB, c.req.param("id"));
   if (!form) return c.notFound();
@@ -1588,6 +1681,21 @@ app.get("/admin/forms/:id/export", async (c) => {
   return exportCsv(form, subs);
 });
 
+app.get("/admin/forms/:id/qr", async (c) => {
+  const form = await getForm(c.env.DB, c.req.param("id"));
+  if (!form) return c.notFound();
+  const origin = originOf(c.req.url);
+  const publicUrl = `${origin}/f/${form.slug || form.id}`;
+  const svg = generateQrSvg(publicUrl, { size: 320 });
+  return new Response(svg, {
+    headers: {
+      "Content-Type": "image/svg+xml; charset=utf-8",
+      "Content-Disposition": `attachment; filename="${form.slug || form.id}-qr.svg"`,
+      "Cache-Control": "public, max-age=3600",
+    },
+  });
+});
+
 function exportCsv(form: FormRow, subs: SubmissionRow[]): Response {
   const keys: string[] = [];
   const parsedRows: Record<string, string>[] = subs.map((s) => {
@@ -1837,6 +1945,14 @@ app.post("/admin/webhooks/:id/test", async (c) => {
   return c.redirect(`/admin/webhooks/${hook.id}?msg=${result.ok ? msg : msg + encodeURIComponent(result.detail)}`);
 });
 
+app.post("/admin/webhooks/:id/rotate-secret", async (c) => {
+  const hook = await getWebhook(c.env.DB, c.req.param("id"));
+  if (!hook) return c.notFound();
+  await rotateWebhookSecret(c.env.DB, hook.id);
+  await audit(c.env.DB, "webhook.secret_rotated", hook.id, hook.url);
+  return c.redirect(`/admin/webhooks/${hook.id}?msg=Signing+secret+rotated`);
+});
+
 /* ---------- workflows / files ---------- */
 
 app.get("/admin/workflows", async (c) => {
@@ -1951,12 +2067,13 @@ app.get("/admin/settings", async (c) => {
   const section = (SECTIONS_KEYS as readonly string[]).includes(sectionParam ?? "")
     ? (sectionParam as SettingsSection)
     : "general";
-  const [stats, forms, retentionDays, apiKeys, members] = await Promise.all([
+  const [stats, forms, retentionDays, apiKeys, members, allowedDomains] = await Promise.all([
     getDashboardStats(c.env.DB),
     listForms(c.env.DB),
     getSetting(c.env.DB, "retention_days"),
     listApiKeys(c.env.DB),
     listWorkspaceMembers(c.env.DB),
+    getAllowedDomains(c.env.DB),
   ]);
   const createdKey = url.searchParams.get("createdKey") || undefined;
   const inviteUrl = url.searchParams.get("invite") || undefined;
@@ -1972,12 +2089,46 @@ app.get("/admin/settings", async (c) => {
       createdKey={createdKey}
       members={members}
       inviteUrl={inviteUrl}
+      allowedDomains={allowedDomains}
       toastMsg={msgFrom(c)}
       commands={baseCommands(originOf(c.req.url))}
       formCount={stats.form_count}
       submissionCount={stats.submission_count}
     />
   );
+});
+
+app.post("/admin/settings/domains/toggle", async (c) => {
+  const body = await c.req.parseBody();
+  const enforced = body.enforced === "1";
+  const config = await getAllowedDomains(c.env.DB);
+  config.enforced = enforced;
+  await saveAllowedDomains(c.env.DB, config);
+  await audit(c.env.DB, "settings.domains_toggled", "", enforced ? "enforced" : "disabled");
+  return c.redirect(`/admin/settings?section=domains&msg=Origin+enforcement+${enforced ? "enabled" : "disabled"}`);
+});
+
+app.post("/admin/settings/domains/add", async (c) => {
+  const body = await c.req.parseBody();
+  const domain = String(body.domain ?? "").trim().toLowerCase();
+  if (!domain) return c.redirect("/admin/settings?section=domains&msg=Domain+required");
+  const config = await getAllowedDomains(c.env.DB);
+  if (!config.domains.includes(domain)) {
+    config.domains.push(domain);
+    await saveAllowedDomains(c.env.DB, config);
+    await audit(c.env.DB, "settings.domain_added", domain, "");
+  }
+  return c.redirect("/admin/settings?section=domains&msg=Allowed+domain+added");
+});
+
+app.post("/admin/settings/domains/delete", async (c) => {
+  const body = await c.req.parseBody();
+  const domain = String(body.domain ?? "").trim().toLowerCase();
+  const config = await getAllowedDomains(c.env.DB);
+  config.domains = config.domains.filter((d) => d !== domain);
+  await saveAllowedDomains(c.env.DB, config);
+  await audit(c.env.DB, "settings.domain_removed", domain, "");
+  return c.redirect("/admin/settings?section=domains&msg=Allowed+domain+removed");
 });
 
 app.post("/admin/settings/members/invite", async (c) => {
@@ -2108,6 +2259,40 @@ const SECTIONS_KEYS = ["general", "members", "domains", "api", "notifications", 
 
 app.get("/", (c) => c.html(<LandingPage origin={originOf(c.req.url)} />));
 
+/* ---------- failure handling ----------
+   Without this, any unhandled throw becomes Hono's bare 500 and nothing reaches the
+   logs with request context attached. Config mistakes are called out by name, because
+   "Internal Server Error" on a login page is an afternoon of guessing: an unset
+   SESSION_SECRET fails closed inside WebCrypto (zero-length HMAC keys are rejected),
+   which is safe but says nothing about the cause. */
+function configProblem(env: Bindings): string | null {
+  const secret = env.SESSION_SECRET ?? "";
+  if (!secret) return "SESSION_SECRET is not set";
+  if (secret.length < 32) return "SESSION_SECRET is shorter than 32 characters";
+  if (/paste-a-long-random-string|changeme|your-secret-here/i.test(secret)) {
+    return "SESSION_SECRET is still set to a placeholder value";
+  }
+  return null;
+}
+
+app.onError((err, c) => {
+  const url = new URL(c.req.url);
+  const problem = configProblem(c.env);
+  console.error(
+    `[500] ${c.req.method} ${url.pathname}${problem ? ` — likely cause: ${problem}` : ""}`,
+    err instanceof Error ? err.stack ?? err.message : String(err)
+  );
+  // Operators need the config hint; everyone else gets a generic message, since the
+  // error text can carry query fragments and database detail.
+  if (problem) {
+    return c.text(
+      `Server misconfigured: ${problem}. Set it with \`npx wrangler secret put SESSION_SECRET\` and redeploy.`,
+      500
+    );
+  }
+  return c.text("Something went wrong on our end. The error has been logged.", 500);
+});
+
 app.notFound((c) => {
   const path = new URL(c.req.url).pathname;
   if (path.startsWith("/admin")) {
@@ -2116,4 +2301,27 @@ app.notFound((c) => {
   return c.text("Not found", 404);
 });
 
-export default app;
+/* ---------- scheduled work ----------
+   Webhook retries need a driver: the request that created a submission is long gone by
+   the time a failed receiver comes back. The cron trigger drains due deliveries on a
+   fixed tick. Errors are swallowed per-tick so one bad sweep cannot wedge the schedule,
+   but they are logged so they show up in `wrangler tail`. */
+export default {
+  fetch: app.fetch,
+  async scheduled(_event: ScheduledEvent, env: Bindings, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(
+      (async () => {
+        try {
+          const report = await sweepRetries(env.DB);
+          if (report.claimed > 0) {
+            console.log(
+              `webhook sweep: claimed=${report.claimed} delivered=${report.delivered} requeued=${report.requeued} exhausted=${report.exhausted}`
+            );
+          }
+        } catch (e) {
+          console.error("webhook sweep failed:", e instanceof Error ? e.stack ?? e.message : String(e));
+        }
+      })()
+    );
+  },
+};

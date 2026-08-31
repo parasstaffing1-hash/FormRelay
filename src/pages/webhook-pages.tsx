@@ -99,6 +99,7 @@ export const WebhookDetailPage: FC<{
 }> = ({ path, hook, deliveries, testResult, toastMsg, commands, formCount, submissionCount }) => {
   const okCount = deliveries.filter((d) => d.ok).length;
   const failRate = deliveries.length ? Math.round(((deliveries.length - okCount) / deliveries.length) * 100) : 0;
+  const queued = deliveries.filter((d) => !d.ok && d.next_attempt_at).length;
 
   return (
     <AppShell
@@ -148,7 +149,10 @@ export const WebhookDetailPage: FC<{
       <div class="settings-wrap" style="margin-top:8px">
         <div style="flex:1;min-width:0">
           <h2 class="section-title">Delivery history</h2>
-          <p class="t2 small mb16">Last {deliveries.length || 0} attempts · {failRate}% failures</p>
+          <p class="t2 small mb16">
+            Last {deliveries.length || 0} attempts · {failRate}% failures
+            {queued > 0 ? ` · ${queued} awaiting retry` : ""}
+          </p>
           {deliveries.length ? (
             <table class="tbl">
               <thead>
@@ -162,10 +166,19 @@ export const WebhookDetailPage: FC<{
               <tbody>
                 {deliveries.map((d) => (
                   <tr>
-                    <td>{d.ok ? <span class="badge badge-success">OK</span> : <span class="badge badge-danger">Failed</span>}</td>
+                    <td>
+                      {d.ok ? (
+                        <span class="badge badge-success">OK</span>
+                      ) : d.next_attempt_at ? (
+                        <span class="badge badge-warning">Retrying</span>
+                      ) : (
+                        <span class="badge badge-danger">Failed</span>
+                      )}
+                    </td>
                     <td class="mono small">{d.event}</td>
                     <td class="t2 small truncate" title={d.detail}>
                       {d.status_code ? `HTTP ${d.status_code}` : d.detail}
+                      {d.attempts > 1 ? <span class="muted"> · {d.attempts} attempts</span> : null}
                     </td>
                     <td class="t2 small nowrap">{fmtDateTime(d.created_at)}</td>
                   </tr>
@@ -193,6 +206,9 @@ export const WebhookDetailPage: FC<{
               <code>{hook.secret}</code>
               <CopyButton value={hook.secret} small />
             </div>
+            <form method="post" action={`/admin/webhooks/${hook.id}/rotate-secret`} data-confirm="Rotate signing secret? Payloads will be signed with the new secret immediately." style="margin-top:10px">
+              <Button variant="danger" size="sm" type="submit">Rotate secret</Button>
+            </form>
           </details>
           <p class="small t2 mt8">
             Verify payloads with HMAC-SHA256 over the raw body — header <code class="mono">X-FormRelay-Signature: sha256=...</code>

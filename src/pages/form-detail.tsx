@@ -6,6 +6,7 @@ import { IconWebhook, IconAlert, IconPlus } from "../ui/icons";
 import { FormRow, SubmissionRow, WebhookWithContext } from "../types";
 import { SUBMISSIONS_PAGE_SIZE, FormAnalytics } from "../db";
 import { fmtNumber, relTime, submissionRef } from "../util";
+import { generateQrSvg } from "../qr";
 import { NoSubmissionsEmpty } from "./shared";
 
 const TABS = ["build", "submissions", "setup", "notifications", "webhooks", "settings", "analytics"] as const;
@@ -77,6 +78,8 @@ export const FormDetailPage: FC<{
   analytics?: FormAnalytics | null;
 }> = ({ path, form, tab, subs = [], subsPage, subsTotal, webhooks, origin, created, hasEmailProvider, toastMsg, commands, formCount, submissionCount, analytics }) => {
   const endpoint = `${origin}/f/${form.id}`;
+  const publicUrl = `${origin}/f/${form.slug || form.id}`;
+  const qrSvg = generateQrSvg(publicUrl, { size: 130 });
   const activeTab: FormTab = TABS.includes(tab) ? tab : "submissions";
 
   const rangeStart = (subsPage - 1) * SUBMISSIONS_PAGE_SIZE + 1;
@@ -218,6 +221,19 @@ export const FormDetailPage: FC<{
             </div>
           ) : null}
           <CodeTabs groupKey="setup" tabs={setupSnippets(endpoint)} />
+
+          <div class="card card-b flex gap16 wrap" style="align-items:center;margin:20px 0;background:var(--bg-subtle,#f9fafb);padding:16px;border-radius:8px;border:1px solid var(--border)">
+            <div style="background:#fff;padding:8px;border-radius:6px;border:1px solid var(--border);display:inline-flex;box-shadow:0 1px 2px rgba(0,0,0,0.05)" dangerouslySetInnerHTML={{ __html: qrSvg }} />
+            <div style="flex:1;min-width:200px">
+              <h3 style="font-size:14px;font-weight:600;margin:0 0 4px">Form QR Code</h3>
+              <p class="t2 small" style="margin:0 0 10px">Scan with a mobile camera or download to print on flyers, posters, and business cards.</p>
+              <div class="flex gap8 wrap">
+                <a class="btn btn-secondary btn-sm" href={`/admin/forms/${form.id}/qr`} download={`${form.slug || form.id}-qr.svg`}>Download SVG</a>
+                <a class="btn btn-secondary btn-sm" href={publicUrl} target="_blank" rel="noopener">Open form ↗</a>
+              </div>
+            </div>
+          </div>
+
           <h2 class="section-title">Special fields</h2>
           <p class="t2 small mb16">Fields starting with an underscore control FormRelay behavior and are never shown as data.</p>
           <table class="tbl">

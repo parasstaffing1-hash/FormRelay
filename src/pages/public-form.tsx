@@ -67,10 +67,70 @@ const PUBLIC_CSS = String.raw`
 .closed-form { padding: var(--space-8) var(--space-6); text-align: center; }
 .closed-form h2 { font-size: var(--text-h2); margin: 0 0 var(--space-2); }
 
+/* --- respondent polish -------------------------------------------------
+   The public form is the only surface most people ever see, so it gets a
+   looser rhythm and larger controls than the dense admin UI. Scoped to
+   .public-card so none of this leaks into the dashboard. Author themes still
+   win: every override falls back through the --form-* custom properties. */
+.public-wrap { padding: clamp(24px, 7vh, 72px) var(--space-4); }
+.public-card {
+  max-width: 620px;
+  border-color: rgba(20, 21, 26, 0.10);
+  box-shadow: 0 1px 2px rgba(16, 18, 24, 0.04), 0 12px 32px -12px rgba(16, 18, 24, 0.10);
+}
+.public-head { padding: var(--space-8) var(--space-8) 0; }
+.public-head h1 {
+  font-size: 27px; line-height: 1.16; letter-spacing: -0.025em;
+  font-weight: var(--weight-semibold); margin: 0;
+}
+.public-head p { font-size: 14px; line-height: 1.6; margin-top: var(--space-2); }
+.public-body { padding: var(--space-6) var(--space-8) var(--space-8); }
+
+.public-card .page-section > h2 {
+  font-size: 11px; letter-spacing: 0.11em; text-transform: uppercase;
+  font-weight: var(--weight-semibold); color: var(--subtle-foreground);
+  margin: 0 0 var(--space-4);
+}
+.public-card .field { margin-bottom: var(--space-5); }
+.public-card .field > label {
+  font-size: 13.5px; font-weight: var(--weight-medium);
+  letter-spacing: -0.005em; margin-bottom: 7px;
+}
+.public-card .input,
+.public-card .select,
+.public-card .textarea {
+  height: 44px; padding: 0 13px; font-size: 15px;
+  border-radius: var(--form-radius, 9px);
+  border-color: rgba(20, 21, 26, 0.14);
+  background: #fff;
+}
+.public-card .textarea { height: auto; min-height: 116px; padding: 11px 13px; line-height: 1.6; }
+.public-card .input:focus,
+.public-card .select:focus,
+.public-card .textarea:focus {
+  border-color: var(--form-button, #15161a);
+  box-shadow: 0 0 0 3px rgba(20, 21, 26, 0.09);
+  outline: none;
+}
+.public-card .input::placeholder,
+.public-card .textarea::placeholder { color: rgba(20, 21, 26, 0.38); }
+
+.public-card .page-actions { margin-top: var(--space-6); gap: var(--space-3); }
+.public-card .page-actions .btn,
+.public-card .public-body > form > .btn {
+  height: 46px !important; font-size: 15px; font-weight: var(--weight-medium);
+  border-radius: var(--form-radius, 9px); letter-spacing: -0.005em;
+}
+.public-card .btn-primary { background: var(--form-button, #15161a); }
+.public-card .btn-primary:hover { background: var(--form-button, #000); filter: brightness(1.08); }
+.public-card .resume-note { margin-top: var(--space-4); font-size: 12.5px; }
+.public-foot { padding: var(--space-4) var(--space-6); font-size: 12px; }
+
 @media (max-width: 600px) {
   .public-wrap { padding: 0; }
   .public-card { border-radius: 0; border-left: 0; border-right: 0; min-height: 100vh; }
-  .public-head { padding-top: var(--space-8); }
+  .public-head { padding: var(--space-8) var(--space-5) 0; }
+  .public-body { padding: var(--space-5) var(--space-5) var(--space-6); }
 }
 `;
 
@@ -216,5 +276,5 @@ export const PublicFormPage: FC<Props> = ({ form, schema, origin, errors = {}, v
   const theme = parseTheme(form.theme_json);
   const style = themeStyle(theme);
   const submitText = schema.settings.submitText?.trim() ? pipeText(schema.settings.submitText, context) : "Submit";
-  return <html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>{form.name} · FormRelay</title><style dangerouslySetInnerHTML={{ __html: CSS + PUBLIC_CSS }} /></head><body><div class="public-wrap" style={style}><div class="public-card">{safeCssUrl(theme.cover) ? <div class="public-cover" style={`background-image:url(${safeCssUrl(theme.cover)})`} /> : null}<div class="public-head">{safeCssUrl(theme.logo) ? <img class="public-logo" src={safeCssUrl(theme.logo)} alt="" /> : null}<h1>{form.name}</h1>{v2 && v2.settings.progressStyle !== "none" && pages.length > 1 ? <><p data-progress-label>Page 1 of {pages.length}</p><div class="progress-track"><div class="progress-fill" data-progress-fill style="width:100%" /></div></> : null}{schema.blocks.length === 0 ? <p>This form has no fields yet.</p> : null}</div><div class="public-body"><form method="post" action={endpoint} enctype="multipart/form-data" data-smart-form={v2 ? "true" : undefined}><input type="text" name="_gotcha" style="display:none" tabindex={-1} autocomplete="off" />{trust?.startToken ? <input type="hidden" name="_started" value={trust.startToken} /> : null}{trust && trust.powBits > 0 ? <input type="hidden" name="_pow_challenge" value={trust.powChallenge} /> : null}{trust && trust.powBits > 0 ? <input type="hidden" name="_pow_nonce" value="" data-pow-bits={String(trust.powBits)} /> : null}{pageBlocks.map(({ page, blocks }) => <section class="page-section" data-page-id={page.id}><h2 class="small t2" style="margin:0 0 12px">{page.title}</h2>{page.description ? <p class="hint" style="margin-top:-8px">{pipeText(page.description, context)}</p> : null}{blocks.map((block) => <BlockField block={block} errors={errors} values={values} context={context} />)}</section>)}<div class="page-actions">{v2 && pages.length > 1 ? <button class="btn btn-secondary" type="button" data-prev hidden>Previous</button> : null}{v2 && pages.length > 1 ? <button class="btn btn-secondary" type="button" data-next hidden>Next</button> : null}<button class="btn btn-primary" type="submit" data-submit style="width:100%;height:38px">{submitText}</button></div>{v2 ? <div class="resume-note" data-resume-note>Your progress is saved securely as you type.</div> : null}</form></div><div class="public-foot">FormRelay · Powered by {origin}</div></div></div>{v2 ? <script type="application/json" id="fr-config" dangerouslySetInnerHTML={{ __html: runtimeConfig(v2, endpoint) }} /> : null}{v2 ? <script src="/assets/form-runtime.js" defer /> : null}{trust && trust.powBits > 0 ? <script src="/assets/pow.js" defer /> : null}</body></html>;
+  return <html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>{form.name} · FormRelay</title><style dangerouslySetInnerHTML={{ __html: CSS + PUBLIC_CSS }} /></head><body><div class="public-wrap" style={style}><div class="public-card">{safeCssUrl(theme.cover) ? <div class="public-cover" style={`background-image:url(${safeCssUrl(theme.cover)})`} /> : null}<div class="public-head">{safeCssUrl(theme.logo) ? <img class="public-logo" src={safeCssUrl(theme.logo)} alt="" /> : null}<h1>{form.name}</h1>{v2 && v2.settings.progressStyle !== "none" && pages.length > 1 ? <><p data-progress-label>Page 1 of {pages.length}</p><div class="progress-track"><div class="progress-fill" data-progress-fill style="width:100%" /></div></> : null}{schema.blocks.length === 0 ? <p>This form has no fields yet.</p> : null}</div><div class="public-body"><form method="post" action={endpoint} enctype="multipart/form-data" data-smart-form={v2 ? "true" : undefined}><input type="text" name="_gotcha" style="display:none" tabindex={-1} autocomplete="off" />{trust?.startToken ? <input type="hidden" name="_started" value={trust.startToken} /> : null}{trust && trust.powBits > 0 ? <input type="hidden" name="_pow_challenge" value={trust.powChallenge} /> : null}{trust && trust.powBits > 0 ? <input type="hidden" name="_pow_nonce" value="" data-pow-bits={String(trust.powBits)} /> : null}{pageBlocks.map(({ page, blocks }) => <section class="page-section" data-page-id={page.id}>{pageBlocks.length > 1 ? <h2>{page.title}</h2> : null}{page.description ? <p class="hint" style="margin-top:-8px">{pipeText(page.description, context)}</p> : null}{blocks.map((block) => <BlockField block={block} errors={errors} values={values} context={context} />)}</section>)}<div class="page-actions">{v2 && pages.length > 1 ? <button class="btn btn-secondary" type="button" data-prev hidden>Previous</button> : null}{v2 && pages.length > 1 ? <button class="btn btn-secondary" type="button" data-next hidden>Next</button> : null}<button class="btn btn-primary" type="submit" data-submit style="width:100%;height:38px">{submitText}</button></div>{v2 ? <div class="resume-note" data-resume-note>Your progress is saved securely as you type.</div> : null}</form></div><div class="public-foot">FormRelay · Powered by {origin}</div></div></div>{v2 ? <script type="application/json" id="fr-config" dangerouslySetInnerHTML={{ __html: runtimeConfig(v2, endpoint) }} /> : null}{v2 ? <script src="/assets/form-runtime.js" defer /> : null}{trust && trust.powBits > 0 ? <script src="/assets/pow.js" defer /> : null}</body></html>;
 };
