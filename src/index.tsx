@@ -98,6 +98,11 @@ import {
   findRecentByFingerprint,
   setSubmissionIngestMeta,
   updateFormSpamRules,
+  recordEmailDelivery,
+  recordDeadLetter,
+  listDeadLetters,
+  countDeadLetters,
+  markDeadLetterRecovered,
   upsertContact,
   attachSubmissionToContact,
   updateContactScore,
@@ -132,7 +137,7 @@ import { guardSelect, cohortFor, isRecurrence, Recurrence, applyMigration, migra
 import { PublicFormPage, FORM_RUNTIME_JS } from "./pages/public-form";
 import { BuilderPage, BUILDER_JS } from "./pages/builder";
 import { audit } from "./audit";
-import { sendNotification, sendAutoReply } from "./email";
+import { sendNotification, sendAutoReply, EmailDeliveryError } from "./email";
 import { checkSpam, normalizePayload } from "./spam";
 import { deliverSubmission, sendTestWebhook, sweepRetries } from "./webhooks";
 import { getFiles, countFiles, totalStorage, getFile, saveUpload, deleteFile } from "./files";
@@ -164,7 +169,7 @@ const NAV_ICONS: Record<string, string> = {
   book: "M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z",
 };
 
-type Env = { Bindings: Bindings };
+type Env = { Bindings: Bindings; Variables: { ingestBody?: string } };
 const app = new Hono<Env>();
 
 // Mount API v1 subapp
@@ -335,6 +340,28 @@ async function clearLoginFailures(db: D1Database, ip: string): Promise<void> {
  * Respondent-facing receipt link. Shown once, on the acknowledgement, because the token
  * is the only thing that authorises access to that response.
  */
+/**
+ * Runs the submission insert with a last-resort safety net.
+ *
+ * If D1 rejects the write there is nowhere else the lead exists, so the raw body is parked
+ * in `dead_letters` and the respondent gets a 202 rather than a 500. A database blip then
+ * costs a manual replay instead of the lead.
+ */
+async function persistOrPark<T>(
+  c: { env: Bindings },
+  context: { formId: string; body: string; contentType: string; ip: string; userAgent: string; referer: string },
+  insert: () => Promise<T>
+): Promise<{ ok: true; value: T } | { ok: false; parked: boolean }> {
+  try {
+    return { ok: true, value: await insert() };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("submission persist failed:", message);
+    const parked = await recordDeadLetter(c.env.DB, { ...context, error: message });
+    return { ok: false, parked };
+  }
+}
+
 function receiptLinkHtml(origin: string, token: string): string {
   if (!token) return "";
   const href = `${origin}/r/${token}`;
@@ -465,6 +492,35 @@ app.post("/f/:id/save", async (c) => {
   const stringData: Record<string, string> = Object.fromEntries(Object.entries(data).map(([key, value]) => [key, Array.isArray(value) ? value.map(String).join(", ") : String(value ?? "")]));
   c.executionCtx.waitUntil(Promise.allSettled(partialWorkflows.map((workflow) => executeWorkflow(c.env, workflow, form, partialId, stringData))));
   return c.json({ ok: true, token });
+});
+
+/**
+ * Buffers the raw body of a submission so `onError` can park it if ingest fails.
+ *
+ * The catch cannot live here. Hono's compose() hands a thrown error to `onError` instead
+ * of rejecting back through the middleware chain, so a try/catch around next() never sees
+ * it - which is exactly why the first version of this net silently did nothing.
+ *
+ * Capped, because a large multipart upload should not sit in memory guarding against a
+ * failure that probably will not happen.
+ */
+const DLQ_MAX_BODY = 128 * 1024;
+
+function isSubmitPath(url: string): boolean {
+  return /^\/f\/[^/]+$/.test(new URL(url).pathname);
+}
+
+app.use("*", async (c, next) => {
+  if (c.req.method !== "POST" || !isSubmitPath(c.req.url)) return next();
+  const declared = Number(c.req.header("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > DLQ_MAX_BODY) return next();
+  try {
+    const text = await c.req.raw.clone().text();
+    if (text.length <= DLQ_MAX_BODY) c.set("ingestBody", text);
+  } catch {
+    // Unreadable body simply means no safety net for this request.
+  }
+  return next();
 });
 
 app.post("/f/:id", async (c) => {
@@ -649,7 +705,11 @@ app.post("/f/:id", async (c) => {
     try {
       verdict = await checkSpam(c.env, data, ip);
     } catch {
-      // never block a submission because spam checks failed
+      // Heuristics may fail open, but a CAPTCHA that cannot be verified must not be
+      // treated as passed - otherwise breaking the verify call switches CAPTCHA off.
+      if (c.env.TURNSTILE_SECRET_KEY) {
+        return c.text("Could not verify the CAPTCHA challenge. Please try again.", 503);
+      }
     }
     let toStoreSchema: Record<string, unknown> = stored;
     const rawStoredJson = JSON.stringify(stored);
@@ -722,23 +782,33 @@ app.post("/f/:id", async (c) => {
     });
     if (assessment.spam) verdict = { spam: true, reason: assessment.signals.map((s) => s.rule).join(",") };
 
+    const rawBodyForDlq = JSON.stringify(rawPayload);
     const resumeToken = typeof rawPayload._resume === "string" ? rawPayload._resume : "";
     // Every non-spam response gets a receipt token so the respondent can later view,
     // export, or erase their own submission without holding an account.
     const receiptToken = verdict.spam ? "" : newResumeToken();
     const receiptHash = receiptToken ? await sha256Hex(receiptToken) : null;
     let submissionId: number | null = null;
-    if (!verdict.spam && resumeToken) {
-      const existing = await getSubmissionByResumeHash(c.env.DB, await sha256Hex(resumeToken));
-      if (existing && existing.form_id === formId) {
-        await completeSubmission(c.env.DB, existing.id, toStoreSchema, receiptHash);
-        submissionId = existing.id;
-      } else {
-        submissionId = await insertSubmission(c.env.DB, formId, toStoreSchema, ip, userAgent, referer, verdict.spam, receiptHash);
+    const persisted = await persistOrPark(
+      c,
+      { formId, body: rawBodyForDlq, contentType, ip, userAgent, referer },
+      async () => {
+        if (!verdict.spam && resumeToken) {
+          const existing = await getSubmissionByResumeHash(c.env.DB, await sha256Hex(resumeToken));
+          if (existing && existing.form_id === formId) {
+            await completeSubmission(c.env.DB, existing.id, toStoreSchema, receiptHash);
+            return existing.id;
+          }
+        }
+        return await insertSubmission(c.env.DB, formId, toStoreSchema, ip, userAgent, referer, verdict.spam, receiptHash);
       }
-    } else {
-      submissionId = await insertSubmission(c.env.DB, formId, toStoreSchema, ip, userAgent, referer, verdict.spam, receiptHash);
+    );
+    if (!persisted.ok) {
+      return isJson
+        ? c.json({ ok: persisted.parked, queued: persisted.parked, error: persisted.parked ? undefined : "Could not store submission." }, persisted.parked ? 202 : 500)
+        : c.text(persisted.parked ? "Your submission was received and is being processed." : "Could not store your submission.", persisted.parked ? 202 : 500);
     }
+    submissionId = persisted.value;
     if (submissionId !== null) {
       await setSubmissionIngestMeta(c.env.DB, submissionId, idempotencyKey, fingerprint, assessment.score, JSON.stringify(assessment.signals));
       await recordEvent(c.env.DB, submissionId, "received", "ok", `${contentType.split(";")[0] || "form"} submission`);
@@ -795,6 +865,47 @@ app.post("/f/:id", async (c) => {
       const createdAt = Date.now();
       // Each downstream stage records its own outcome, successes included, so the timeline
       // shows a stage that failed *and* a stage that never ran.
+      /**
+       * Email needs its own recorder: a send can succeed, fail, or be skipped because no
+       * provider is configured, and reporting a skip or a failure as "delivered" is what
+       * made the timeline untrustworthy before.
+       */
+      const trackEmail = async (
+        kind: string,
+        subId: number | null,
+        f: typeof form,
+        payload: Record<string, string>,
+        run: Promise<import("./email").SendOutcome>
+      ): Promise<void> => {
+        const recipient = kind === "notification" ? f.notify_email : (payload._replyto || payload.email || "");
+        try {
+          const outcome = await run;
+          if (outcome.sent) {
+            if (subId !== null) await recordEvent(c.env.DB, subId, kind, "ok", `delivered via ${outcome.result?.provider ?? "provider"}`);
+            await recordEmailDelivery(c.env.DB, {
+              submissionId: subId, formId: f.id, kind, recipient: recipient ?? "",
+              provider: outcome.result?.provider ?? "", status: "sent",
+              responseStatus: outcome.result?.status ?? null, detail: outcome.result?.id ?? "",
+            });
+          } else {
+            if (subId !== null) await recordEvent(c.env.DB, subId, kind, "skipped", outcome.skipped ?? "not sent");
+            await recordEmailDelivery(c.env.DB, {
+              submissionId: subId, formId: f.id, kind, recipient: recipient ?? "",
+              provider: "", status: "skipped", detail: outcome.skipped ?? "",
+            });
+          }
+        } catch (error) {
+          const result = error instanceof EmailDeliveryError ? error.result : null;
+          const detail = error instanceof Error ? error.message : String(error);
+          if (subId !== null) await recordEvent(c.env.DB, subId, kind, "failed", detail, result?.status ?? null);
+          await recordEmailDelivery(c.env.DB, {
+            submissionId: subId, formId: f.id, kind, recipient: recipient ?? "",
+            provider: result?.provider ?? "", status: "failed",
+            responseStatus: result?.status ?? null, detail,
+          });
+        }
+      };
+
       const track = async <T,>(stage: string, run: Promise<T>): Promise<void> => {
         if (submissionId === null) { await run.catch(() => {}); return; }
         try {
@@ -807,9 +918,9 @@ app.post("/f/:id", async (c) => {
 
       c.executionCtx.waitUntil(
         Promise.allSettled([
-          track("notification", sendNotification(c.env, form, data)),
+          trackEmail("notification", submissionId, form, data, sendNotification(c.env, form, data)),
           recordFormEvent(c.env.DB, formId, "submission", referer, trackingMetadata(c.req.url)),
-          track("autoresponder", sendAutoReply(c.env, form, data)),
+          trackEmail("autoresponder", submissionId, form, data, sendAutoReply(c.env, form, data)),
           ...(submissionId !== null
             ? activeHooks.map((h) => track("webhook", deliverSubmission(c.env.DB, h, { id: form.id, name: form.name }, submissionId, data, createdAt)))
             : []),
@@ -847,7 +958,12 @@ app.post("/f/:id", async (c) => {
   let verdict = { spam: false, reason: "" };
   try {
     verdict = await checkSpam(c.env, data, ip);
-  } catch {
+  } catch (spamError) {
+    // Heuristics may fail open, but a CAPTCHA that cannot be verified must not be treated
+    // as passed - otherwise breaking the verify call is a way to switch CAPTCHA off.
+    if (c.env.TURNSTILE_SECRET_KEY) {
+      return c.text("Could not verify the CAPTCHA challenge. Please try again.", 503);
+    }
     // never block a submission because spam checks failed
   }
 
@@ -863,9 +979,17 @@ app.post("/f/:id", async (c) => {
       toStore = wrapper as unknown as Record<string, string>;
     }
   }
-  const submissionId = await insertSubmission(
-    c.env.DB, formId, toStore, ip, userAgent, referer, verdict.spam
+  const persistedV1 = await persistOrPark(
+    c,
+    { formId, body: JSON.stringify(data), contentType, ip, userAgent, referer },
+    () => insertSubmission(c.env.DB, formId, toStore, ip, userAgent, referer, verdict.spam)
   );
+  if (!persistedV1.ok) {
+    return isJson
+      ? c.json({ ok: persistedV1.parked, queued: persistedV1.parked, error: persistedV1.parked ? undefined : "Could not store submission." }, persistedV1.parked ? 202 : 500)
+      : c.text(persistedV1.parked ? "Your submission was received and is being processed." : "Could not store your submission.", persistedV1.parked ? 202 : 500);
+  }
+  const submissionId = persistedV1.value;
 
   if (c.env.FILES && uploads.length > 0 && !verdict.spam) {
     const env = c.env;
@@ -878,10 +1002,39 @@ app.post("/f/:id", async (c) => {
     const hooks = await listWebhooks(c.env.DB, formId);
     const activeHooks = hooks.filter((h) => h.active);
     const createdAt = Date.now();
+    // Email outcomes are recorded here too, so a headless form's delivery log is as
+    // trustworthy as a builder form's.
+    const logEmail = async (kind: string, run: Promise<import("./email").SendOutcome>): Promise<void> => {
+      const recipient = kind === "notification" ? form.notify_email : (data._replyto || data.email || "");
+      try {
+        const outcome = await run;
+        await recordEmailDelivery(c.env.DB, {
+          submissionId, formId: form.id, kind, recipient: recipient ?? "",
+          provider: outcome.result?.provider ?? "",
+          status: outcome.sent ? "sent" : "skipped",
+          responseStatus: outcome.result?.status ?? null,
+          detail: outcome.sent ? (outcome.result?.id ?? "") : (outcome.skipped ?? ""),
+        });
+        if (submissionId !== null) {
+          await recordEvent(c.env.DB, submissionId, kind, outcome.sent ? "ok" : "skipped",
+            outcome.sent ? `delivered via ${outcome.result?.provider ?? "provider"}` : (outcome.skipped ?? "not sent"));
+        }
+      } catch (error) {
+        const result = error instanceof EmailDeliveryError ? error.result : null;
+        const detail = error instanceof Error ? error.message : String(error);
+        await recordEmailDelivery(c.env.DB, {
+          submissionId, formId: form.id, kind, recipient: recipient ?? "",
+          provider: result?.provider ?? "", status: "failed",
+          responseStatus: result?.status ?? null, detail,
+        });
+        if (submissionId !== null) await recordEvent(c.env.DB, submissionId, kind, "failed", detail, result?.status ?? null);
+      }
+    };
+
     c.executionCtx.waitUntil(
       Promise.allSettled([
-        sendNotification(c.env, form, data),
-        sendAutoReply(c.env, form, data),
+        logEmail("notification", sendNotification(c.env, form, data)),
+        logEmail("autoresponder", sendAutoReply(c.env, form, data)),
         ...(submissionId !== null
           ? activeHooks.map((h) =>
               deliverSubmission(c.env.DB, h, { id: form.id, name: form.name }, submissionId, data, createdAt)
@@ -1009,6 +1162,73 @@ app.post("/invite/:token", async (c) => {
   const user = await acceptInvitation(c.env.DB, invite, name, await hashPassword(password));
   setSessionCookie(c, await makeUserSessionToken(user.id, invite.workspace_id, c.env.SESSION_SECRET));
   return c.redirect("/admin?msg=Invitation+accepted");
+});
+
+/* ---------- dead letters ---------- */
+
+/**
+ * Submissions whose database write failed. They are parked rather than lost, and this is
+ * where an operator replays them once the underlying problem is fixed.
+ */
+app.get("/admin/dead-letters", async (c) => {
+  const [rows, stats] = await Promise.all([listDeadLetters(c.env.DB, 100), getDashboardStats(c.env.DB)]);
+  return c.html(
+    <AppShell
+      path="/admin/dead-letters"
+      crumbs={[{ label: "Recovery" }]}
+      toastMsg={msgFrom(c)}
+      commands={baseCommands(originOf(c.req.url))}
+      formCount={stats.form_count}
+      submissionCount={stats.submission_count}
+    >
+      <PageHead
+        title="Recovery queue"
+        sub="Submissions whose database write failed. The respondent was told we had it, so these are owed a replay."
+      />
+      {rows.length === 0 ? (
+        <div class="callout">Nothing parked. Every submission has been written successfully.</div>
+      ) : (
+        <div class="card">
+          {rows.map((row) => (
+            <div class="list-item" style="align-items:flex-start">
+              <div class="grow" style="min-width:0">
+                <div class="cell-main">{row.form_id}</div>
+                <div class="cell-sub">{new Date(row.created_at).toUTCString()} · {row.error}</div>
+                <pre class="mono small" style="margin-top:8px;white-space:pre-wrap;word-break:break-word;max-height:120px;overflow:auto">{row.body.slice(0, 600)}</pre>
+              </div>
+              <form method="post" action={`/admin/dead-letters/${row.id}/replay`} style="margin:0">
+                <Button variant="secondary" type="submit">Replay</Button>
+              </form>
+            </div>
+          ))}
+        </div>
+      )}
+    </AppShell>
+  );
+});
+
+app.post("/admin/dead-letters/:id/replay", async (c) => {
+  const id = Number(c.req.param("id"));
+  const rows = await listDeadLetters(c.env.DB, 500);
+  const row = rows.find((entry) => entry.id === id);
+  if (!row) return c.notFound();
+
+  let payload: Record<string, string> = {};
+  try {
+    const parsed = JSON.parse(row.body) as Record<string, unknown>;
+    payload = Object.fromEntries(Object.entries(parsed).map(([k, v]) => [k, String(v ?? "")]));
+  } catch {
+    return c.redirect(`/admin/dead-letters?msg=${encodeURIComponent("Parked body is not readable JSON")}`);
+  }
+
+  const submissionId = await insertSubmission(c.env.DB, row.form_id, payload, "", "", "", false);
+  if (submissionId === null) {
+    return c.redirect(`/admin/dead-letters?msg=${encodeURIComponent("Replay failed - the database is still rejecting writes")}`);
+  }
+  await recordEvent(c.env.DB, submissionId, "persisted", "ok", `recovered from the queue (dead letter ${id})`);
+  await markDeadLetterRecovered(c.env.DB, id);
+  await audit(c.env.DB, "submission.recovered", String(submissionId), `dead letter ${id}`);
+  return c.redirect(`/admin/dead-letters?msg=${encodeURIComponent("Submission recovered")}`);
 });
 
 /* ---------- contacts ---------- */
@@ -2450,8 +2670,33 @@ function configProblem(env: Bindings): string | null {
   return null;
 }
 
-app.onError((err, c) => {
+app.onError(async (err, c) => {
   const url = new URL(c.req.url);
+
+  // A failed submission is the one error we never answer with a 500: the respondent
+  // cannot retry what they have already sent, so the payload is parked for replay.
+  const buffered = c.get("ingestBody");
+  if (c.req.method === "POST" && isSubmitPath(c.req.url) && buffered) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`ingest failed, parking submission: ${message}`);
+    const parked = await recordDeadLetter(c.env.DB, {
+      formId: url.pathname.split("/")[2] ?? "",
+      body: buffered,
+      contentType: c.req.header("content-type") ?? "",
+      ip: clientIp(c),
+      userAgent: c.req.header("user-agent") ?? "",
+      referer: c.req.header("referer") ?? "",
+      error: message,
+    });
+    if (parked) {
+      const wantsJson = (c.req.header("content-type") ?? "").includes("application/json")
+        || (c.req.header("accept") ?? "").includes("application/json");
+      return wantsJson
+        ? c.json({ ok: true, queued: true }, 202)
+        : c.text("Your submission was received and is being processed.", 202);
+    }
+  }
+
   const problem = configProblem(c.env);
   console.error(
     `[500] ${c.req.method} ${url.pathname}${problem ? ` — likely cause: ${problem}` : ""}`,

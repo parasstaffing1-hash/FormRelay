@@ -1267,3 +1267,81 @@ export async function contactStats(db: D1Database): Promise<{ total: number; hot
   ).first<{ total: number; hot: number; new_count: number }>();
   return { total: row?.total ?? 0, hot: row?.hot ?? 0, new_count: row?.new_count ?? 0 };
 }
+
+/* ---------- email delivery log ---------- */
+
+export async function recordEmailDelivery(
+  db: D1Database,
+  row: {
+    submissionId: number | null;
+    formId: string;
+    kind: string;
+    recipient: string;
+    provider: string;
+    status: string;
+    responseStatus?: number | null;
+    detail?: string;
+    payload?: string | null;
+    nextAttemptAt?: number | null;
+  }
+): Promise<void> {
+  try {
+    await db.prepare(
+      `INSERT INTO email_deliveries (submission_id, form_id, kind, recipient, provider, status, response_status, detail, payload, next_attempt_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      row.submissionId, row.formId, row.kind, row.recipient.slice(0, 200), row.provider,
+      row.status, row.responseStatus ?? null, (row.detail ?? "").slice(0, 600),
+      row.payload ?? null, row.nextAttemptAt ?? null, Date.now()
+    ).run();
+  } catch {
+    // Logging a delivery must never fail the request that produced it.
+  }
+}
+
+export async function listEmailDeliveries(db: D1Database, submissionId: number, limit = 20): Promise<Record<string, unknown>[]> {
+  const { results } = await db
+    .prepare("SELECT * FROM email_deliveries WHERE submission_id = ? ORDER BY created_at DESC LIMIT ?")
+    .bind(submissionId, limit).all<Record<string, unknown>>();
+  return results ?? [];
+}
+
+/* ---------- ingest dead letters ---------- */
+
+/**
+ * Parks a submission whose insert failed. Uses its own statement so a failure here is the
+ * only remaining way to lose the lead, rather than the first.
+ */
+export async function recordDeadLetter(
+  db: D1Database,
+  row: { formId: string; body: string; contentType: string; ip: string; userAgent: string; referer: string; error: string }
+): Promise<boolean> {
+  try {
+    await db.prepare(
+      `INSERT INTO dead_letters (form_id, body, content_type, ip, user_agent, referer, error, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      row.formId, row.body.slice(0, 100_000), row.contentType, row.ip,
+      row.userAgent.slice(0, 500), row.referer.slice(0, 500), row.error.slice(0, 600), Date.now()
+    ).run();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function listDeadLetters(db: D1Database, limit = 100): Promise<{ id: number; form_id: string; body: string; error: string; created_at: number; recovered_at: number | null }[]> {
+  const { results } = await db
+    .prepare("SELECT * FROM dead_letters WHERE recovered_at IS NULL ORDER BY created_at DESC LIMIT ?")
+    .bind(limit).all<any>();
+  return results ?? [];
+}
+
+export async function countDeadLetters(db: D1Database): Promise<number> {
+  const row = await db.prepare("SELECT COUNT(*) AS n FROM dead_letters WHERE recovered_at IS NULL").first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+export async function markDeadLetterRecovered(db: D1Database, id: number): Promise<void> {
+  await db.prepare("UPDATE dead_letters SET recovered_at = ? WHERE id = ?").bind(Date.now(), id).run();
+}

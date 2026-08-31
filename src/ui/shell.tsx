@@ -6,7 +6,7 @@ import {
   LogoMark,
   IconHome, IconForm, IconInbox, IconZap, IconWebhook, IconFile,
   IconUsers, IconSettings, IconBook, IconGauge, IconMenu, IconPanelLeft,
-  IconSearch, IconPlus,
+  IconSearch, IconPlus, IconAlert,
 } from "./icons";
 
 export type CommandItem = { label: string; href: string; icon: string; keywords?: string };
@@ -57,7 +57,7 @@ export const AppShell: FC<
         { label: "Webhooks", href: "/admin/webhooks", icon: <IconWebhook />, match: (p) => p.startsWith("/admin/webhooks") },
       ],
     },
-    { label: "Data", items: [{ label: "Files", href: "/admin/files", icon: <IconFile />, match: (p) => p.startsWith("/admin/files") }] },
+    { label: "Data", items: [{ label: "Files", href: "/admin/files", icon: <IconFile />, match: (p) => p.startsWith("/admin/files") }, { label: "Recovery", href: "/admin/dead-letters", icon: <IconAlert />, match: (p) => p.startsWith("/admin/dead-letters") }] },
     {
       label: "Workspace",
       items: [
