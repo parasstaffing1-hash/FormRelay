@@ -26,7 +26,13 @@ function connectionString() {
   return line.slice("DATABASE_URL=".length).trim();
 }
 
-const client = postgres(connectionString(), { max: 1, onnotice: () => {} });
+// Mirrors dbconnect.ts: int8 must parse as a number, or every 0/1 flag arrives as the
+// truthy string "0" and the smoke test would not be exercising what production does.
+const client = postgres(connectionString(), {
+  max: 1,
+  onnotice: () => {},
+  types: { bigint: { to: 20, from: [20], serialize: (v) => v.toString(), parse: (v) => Number(v) } },
+});
 const DB = createPgDatabase(client);
 
 let failures = 0;
