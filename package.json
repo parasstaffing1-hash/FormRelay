@@ -9,7 +9,7 @@
     "db:init": "wrangler d1 execute formrelay --local --file=./schema.sql",
     "db:init:remote": "wrangler d1 execute formrelay --remote --file=./schema.sql",
     "typecheck": "tsc --noEmit",
-    "test": "node -e \"fs.rmSync('.test-build', { recursive: true, force: true })\" && tsc --target ES2022 --module CommonJS --moduleResolution Node --jsx react-jsx --jsxImportSource hono/jsx --skipLibCheck --types @cloudflare/workers-types --outDir .test-build src/blocks.ts src/logic.ts src/util.ts src/integrity.ts src/diff.ts src/trust.ts src/ops.ts src/retry.ts src/insights.ts src/qr.ts src/validate-contact.ts src/spam-score.ts src/events.ts src/contacts.ts src/db.ts && node --test tests/logic.test.cjs tests/security.test.cjs tests/integrity.test.cjs tests/erasure.test.cjs tests/trust.test.cjs tests/ops.test.cjs tests/retry.test.cjs tests/insights.test.cjs tests/domains-qr.test.cjs tests/ingest.test.cjs tests/contacts.test.cjs"
+    "test": "node -e \"fs.rmSync('.test-build', { recursive: true, force: true })\" && tsc --target ES2022 --module CommonJS --moduleResolution Node --jsx react-jsx --jsxImportSource hono/jsx --skipLibCheck --types @cloudflare/workers-types --outDir .test-build src/blocks.ts src/logic.ts src/util.ts src/integrity.ts src/diff.ts src/trust.ts src/ops.ts src/retry.ts src/insights.ts src/qr.ts src/validate-contact.ts src/spam-score.ts src/events.ts src/contacts.ts src/db.ts && node --test tests/logic.test.cjs tests/security.test.cjs tests/integrity.test.cjs tests/erasure.test.cjs tests/trust.test.cjs tests/ops.test.cjs tests/retry.test.cjs tests/insights.test.cjs tests/domains-qr.test.cjs tests/ingest.test.cjs tests/contacts.test.cjs tests/styles.test.cjs"
   },
   "dependencies": {
     "hono": "^4.6.14"

@@ -414,6 +414,9 @@ table.tbl { width: 100%; border-collapse: collapse; }
   border-bottom: 1px solid var(--border); white-space: nowrap;
   position: sticky; top: 0; background: var(--background); z-index: 5;
 }
+/* .tbl th is more specific than .num, so a numeric header needs its own rule or it
+   sits left while its column sits right. */
+.tbl th.num { text-align: right; }
 .tbl th.sortable { cursor: pointer; user-select: none; }
 .tbl th.sortable:hover { color: var(--foreground); }
 .tbl th .sort-arrow { opacity: 0; margin-left: var(--space-1); font-size: 9px; }
@@ -528,6 +531,27 @@ tr:hover .rowmenu summary, .rowmenu summary:focus-visible, .rowmenu[open] summar
   .settings-nav { width: 100%; position: static; display: flex; flex-wrap: wrap; gap: var(--space-1); }
   .setsec { max-width: none; }
   .kv { flex-direction: column; align-items: flex-start; gap: var(--space-1); }
+}
+
+/* ================================================== detail record layout === */
+/* Primary record on the left, secondary rail on the right. The rail is for reference
+   material (metadata, controls); anything a reader needs to follow belongs in the main
+   column, which is why the delivery timeline lives there. */
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: var(--space-10);
+  align-items: start;
+}
+.detail-main { min-width: 0; }
+.detail-rail { min-width: 0; position: sticky; top: calc(var(--topbar-height) + var(--space-4)); }
+.detail-rail .section-title:first-child { margin-top: 0; }
+
+/* Below this the rail has nothing useful to sit beside, so it becomes a final section. */
+@media (max-width: 1040px) {
+  .detail-grid { grid-template-columns: minmax(0, 1fr); gap: var(--space-6); }
+  .detail-rail { position: static; }
 }
 
 /* ======================================================= empty state ======= */

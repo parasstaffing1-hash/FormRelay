@@ -81,9 +81,9 @@ export const InboxPage: FC<{
               <SubmissionTable subs={subs} showForm selectable />
             </div>
             <div class="flex gap8 mt8 wrap" style="align-items:center">
-              <label class="small"><input type="checkbox" data-check-all="input[name=id]" /> Select all</label>
+              <label class="small"><input type="checkbox" data-check-all="input[name=id]" aria-label="Select all responses on this page" /> Select all</label>
               <select class="select" name="action" aria-label="Bulk action"><option value="completed">Mark completed</option><option value="partial">Mark partial</option><option value="spam">Mark spam</option><option value="tag">Add tag</option><option value="delete">Delete</option></select>
-              <input class="input" name="tag" placeholder="Tag when adding tag" style="max-width:180px" />
+              <input class="input" name="tag" placeholder="Tag when adding tag" aria-label="Tag to add" style="max-width:180px" />
               <button class="btn btn-secondary btn-sm" type="submit">Apply</button>
             </div>
           </form>

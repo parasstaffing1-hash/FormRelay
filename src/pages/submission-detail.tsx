@@ -71,8 +71,8 @@ export const SubmissionDetailPage: FC<{
         </div>
       </div>
 
-      <div class="settings-wrap">
-        <div style="flex:1;min-width:0;max-width:620px">
+      <div class="detail-grid">
+        <div class="detail-main">
           <h2 class="section-title">Fields</h2>
           {fields.length ? (
             <div class="card card-b">
@@ -91,9 +91,7 @@ export const SubmissionDetailPage: FC<{
             <summary class="link-btn" style="cursor:pointer;width:fit-content">View raw data</summary>
             <pre class="snippet mt8">{JSON.stringify(data, null, 2)}</pre>
           </details>
-        </div>
 
-        <div style="width:260px;flex-shrink:0">
           <h2 class="section-title">Delivery timeline</h2>
           <p class="small muted" style="margin-top:-8px;margin-bottom:12px">
             Every stage this submission passed through. A stage that failed is shown with
@@ -146,6 +144,9 @@ export const SubmissionDetailPage: FC<{
             </div>
           </div>
 
+        </div>
+
+        <aside class="detail-rail">
           <h2 class="section-title mt16">Metadata</h2>
           <div class="card card-b">
             {meta.map(([k, v]) => (
@@ -169,7 +170,7 @@ export const SubmissionDetailPage: FC<{
               <div>Flagged as spam by honeypot, rate limiting, or captcha checks.</div>
             </div>
           ) : null}
-        </div>
+        </aside>
       </div>
     </AppShell>
   );
