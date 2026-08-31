@@ -723,7 +723,7 @@ app.post("/f/:id", async (c) => {
     const referer = c.req.header("referer") || "";
     let verdict = { spam: false, reason: "" };
     try {
-      verdict = await checkSpam(c.env, data, ip);
+      verdict = await checkSpam(c.env, data, ip, new URL(c.req.url).hostname);
     } catch {
       // Heuristics may fail open, but a CAPTCHA that cannot be verified must not be
       // treated as passed - otherwise breaking the verify call switches CAPTCHA off.
@@ -878,7 +878,10 @@ app.post("/f/:id", async (c) => {
       );
     }
     if (!verdict.spam) {
-      const hooks = await listWebhooks(c.env.DB, formId);
+      // Public submit path: there is no session, so the workspace comes from the form
+      // itself. Letting this fall back to the bootstrap workspace would silently stop
+      // webhook delivery for every form belonging to any other workspace.
+      const hooks = await listWebhooks(c.env.DB, formId, form.workspace_id ?? DEFAULT_WORKSPACE);
       const activeHooks = hooks.filter((h) => h.active);
       const workflows = await listWorkflows(c.env.DB, formId);
       const activeWorkflows = workflows.filter((workflow) => workflow.active && workflow.trigger === "submission.completed");
@@ -977,7 +980,7 @@ app.post("/f/:id", async (c) => {
 
   let verdict = { spam: false, reason: "" };
   try {
-    verdict = await checkSpam(c.env, data, ip);
+    verdict = await checkSpam(c.env, data, ip, new URL(c.req.url).hostname);
   } catch (spamError) {
     // Heuristics may fail open, but a CAPTCHA that cannot be verified must not be treated
     // as passed - otherwise breaking the verify call is a way to switch CAPTCHA off.
@@ -1019,7 +1022,8 @@ app.post("/f/:id", async (c) => {
   }
 
   if (!verdict.spam) {
-    const hooks = await listWebhooks(c.env.DB, formId);
+    // Public path — workspace comes from the form, not from a session. See above.
+    const hooks = await listWebhooks(c.env.DB, formId, form.workspace_id ?? DEFAULT_WORKSPACE);
     const activeHooks = hooks.filter((h) => h.active);
     const createdAt = Date.now();
     // Email outcomes are recorded here too, so a headless form's delivery log is as
@@ -1191,7 +1195,7 @@ app.post("/invite/:token", async (c) => {
  * where an operator replays them once the underlying problem is fixed.
  */
 app.get("/admin/dead-letters", async (c) => {
-  const [rows, stats] = await Promise.all([listDeadLetters(c.env.DB, 100), getDashboardStats(c.env.DB)]);
+  const [rows, stats] = await Promise.all([listDeadLetters(c.env.DB, 100, wsOf(c)), getDashboardStats(c.env.DB)]);
   return c.html(
     <AppShell
       path="/admin/dead-letters"
@@ -1229,7 +1233,7 @@ app.get("/admin/dead-letters", async (c) => {
 
 app.post("/admin/dead-letters/:id/replay", async (c) => {
   const id = Number(c.req.param("id"));
-  const rows = await listDeadLetters(c.env.DB, 500);
+  const rows = await listDeadLetters(c.env.DB, 500, wsOf(c));
   const row = rows.find((entry) => entry.id === id);
   if (!row) return c.notFound();
 
@@ -1261,8 +1265,8 @@ app.get("/admin/contacts", async (c) => {
   const page = parsePage(url.searchParams.get("page"));
 
   const [contacts, total, stats, dash] = await Promise.all([
-    listContacts(c.env.DB, { q, status, page }),
-    countContacts(c.env.DB, { q, status }),
+    listContacts(c.env.DB, { q, status, page, workspaceId: wsOf(c) }),
+    countContacts(c.env.DB, { q, status, workspaceId: wsOf(c) }),
     contactStats(c.env.DB),
     getDashboardStats(c.env.DB),
   ]);
@@ -1989,7 +1993,7 @@ app.get("/admin/forms/:id", async (c) => {
   const [subs, subsTotal, hooks, stats, analytics] = await Promise.all([
     listSubmissionsForForm(c.env.DB, form.id, { page: subsPage }),
     countSubmissionsForForm(c.env.DB, form.id),
-    listWebhooks(c.env.DB, form.id),
+    listWebhooks(c.env.DB, form.id, wsOf(c)),
     getDashboardStats(c.env.DB),
     tab === "analytics" ? getAnalytics(c.env.DB, form.id) : Promise.resolve(null),
   ]);
@@ -2298,7 +2302,7 @@ app.post("/admin/submissions/bulk", async (c) => {
 
 app.get("/admin/webhooks", async (c) => {
   const [hooks, forms, stats] = await Promise.all([
-    listWebhooks(c.env.DB),
+    listWebhooks(c.env.DB, undefined, wsOf(c)),
     listForms(c.env.DB, wsOf(c)),
     getDashboardStats(c.env.DB),
   ]);
@@ -2451,8 +2455,8 @@ app.post("/admin/notifications/read", async (c) => {
 app.get("/admin/files", async (c) => {
   const page = parsePage(new URL(c.req.url).searchParams.get("page"));
   const [files, total, storage] = await Promise.all([
-    getFiles(c.env.DB, { page }),
-    countFiles(c.env.DB),
+    getFiles(c.env.DB, { page, workspaceId: wsOf(c) }),
+    countFiles(c.env.DB, { workspaceId: wsOf(c) }),
     totalStorage(c.env.DB),
   ]);
   const stats = await getDashboardStats(c.env.DB);

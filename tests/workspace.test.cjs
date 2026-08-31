@@ -200,3 +200,82 @@ test('an unknown target is refused without writing', async () => {
   assert.equal(await transferOwnership(db, 'ws_a', 'u_owner', 'u_ghost'), false);
   assert.equal(db.batches, 0);
 });
+
+/* ---------- listings reached through a form ---------- */
+
+const { listWebhooks, listDeadLetters, listContacts, countContacts } = require('../.test-build/db.js');
+const { getFiles, countFiles } = require('../.test-build/files.js');
+
+/** Captures the SQL so the tests assert on the join, not just the returned rows. */
+function sqlSpy(rows = []) {
+  const seen = [];
+  return {
+    seen,
+    prepare(sql) {
+      seen.push(sql.replace(/\s+/g, ' ').trim());
+      return {
+        bind(...args) {
+          seen[seen.length - 1] += ` -- binds:${JSON.stringify(args)}`;
+          return {
+            async all() { return { results: rows }; },
+            async first() { return rows[0] ?? { n: 0 }; },
+          };
+        },
+      };
+    },
+  };
+}
+
+test('the global webhook list is joined to forms and filtered by workspace', async () => {
+  // Before this, the list showed every tenant's endpoints -- including their URLs.
+  const db = sqlSpy();
+  await listWebhooks(db, undefined, 'ws_a');
+  assert.match(db.seen[0], /JOIN forms f ON f\.id = w\.form_id WHERE f\.workspace_id = \?/);
+  assert.match(db.seen[0], /binds:\["ws_a"\]/);
+});
+
+test('a per-form webhook list still checks the form belongs to the workspace', async () => {
+  const db = sqlSpy();
+  await listWebhooks(db, 'f_1', 'ws_a');
+  assert.match(db.seen[0], /w\.form_id = \? AND f\.workspace_id = \?/);
+});
+
+test('dead letters are scoped through their form', async () => {
+  const db = sqlSpy();
+  await listDeadLetters(db, 50, 'ws_a');
+  assert.match(db.seen[0], /JOIN forms f ON f\.id = d\.form_id/);
+  assert.match(db.seen[0], /f\.workspace_id = \?/);
+});
+
+test('contacts filter on their own workspace column, unconditionally', async () => {
+  const db = sqlSpy();
+  await listContacts(db, { workspaceId: 'ws_a' });
+  assert.match(db.seen[0], /WHERE workspace_id = \?/);
+  // A search term must narrow within the workspace, never replace the predicate.
+  const db2 = sqlSpy();
+  await listContacts(db2, { workspaceId: 'ws_a', q: 'bob' });
+  assert.match(db2.seen[0], /workspace_id = \? AND \(email/);
+});
+
+test('the contact count uses the same predicate as the listing', async () => {
+  // If these disagree, pagination shows page counts for rows the user cannot see.
+  const db = sqlSpy();
+  await countContacts(db, { workspaceId: 'ws_a' });
+  assert.match(db.seen[0], /WHERE workspace_id = \?/);
+});
+
+test('files are scoped through their form with an inner join', async () => {
+  const db = sqlSpy();
+  await getFiles(db, { workspaceId: 'ws_a' });
+  // Inner join, not left: a file whose form is gone belongs to no workspace and must not
+  // surface in whichever tenant happens to be listing.
+  assert.match(db.seen[0], /FROM files fi JOIN forms fo ON fo\.id = fi\.form_id/);
+  assert.doesNotMatch(db.seen[0], /LEFT JOIN/);
+  assert.match(db.seen[0], /fo\.workspace_id = \?/);
+});
+
+test('the file count matches the file listing', async () => {
+  const db = sqlSpy();
+  await countFiles(db, { workspaceId: 'ws_a' });
+  assert.match(db.seen[0], /JOIN forms fo ON fo\.id = fi\.form_id WHERE fo\.workspace_id = \?/);
+});

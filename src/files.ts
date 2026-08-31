@@ -1,5 +1,6 @@
 import { Bindings, FileRow, FileWithContext } from "./types";
 import { randomToken } from "./util";
+import { DEFAULT_WORKSPACE } from "./db";
 
 export const FILES_PAGE_SIZE = 25;
 
@@ -40,13 +41,22 @@ export async function saveUpload(
   return row;
 }
 
-export type FilesFilter = { formId?: string; page?: number };
+export type FilesFilter = { formId?: string; page?: number; workspaceId?: string };
 
+/**
+ * Files are reached through their form, which is what carries the workspace.
+ *
+ * An inner join, not a left join: a file whose form no longer exists belongs to no
+ * workspace, so there is no tenant it can correctly be shown to. Deleting a form does not
+ * currently remove its files, so such orphans do exist -- they are excluded here rather
+ * than leaked to whichever workspace happens to be listing.
+ */
 export async function getFiles(db: D1Database, filter: FilesFilter = {}): Promise<FileWithContext[]> {
-  const where = filter.formId ? "WHERE fi.form_id = ?" : "";
+  const workspaceId = filter.workspaceId ?? DEFAULT_WORKSPACE;
+  const where = filter.formId ? "WHERE fo.workspace_id = ? AND fi.form_id = ?" : "WHERE fo.workspace_id = ?";
   const offset = Math.max(1, filter.page ?? 1) - 1;
-  const sql = `SELECT fi.*, fo.name AS form_name FROM files fi LEFT JOIN forms fo ON fo.id = fi.form_id ${where} ORDER BY fi.created_at DESC LIMIT ? OFFSET ?`;
-  const binds: (string | number)[] = filter.formId ? [filter.formId] : [];
+  const sql = `SELECT fi.*, fo.name AS form_name FROM files fi JOIN forms fo ON fo.id = fi.form_id ${where} ORDER BY fi.created_at DESC LIMIT ? OFFSET ?`;
+  const binds: (string | number)[] = filter.formId ? [workspaceId, filter.formId] : [workspaceId];
   const { results } = await db
     .prepare(sql)
     .bind(...binds, FILES_PAGE_SIZE, offset * FILES_PAGE_SIZE)
@@ -54,11 +64,13 @@ export async function getFiles(db: D1Database, filter: FilesFilter = {}): Promis
   return results ?? [];
 }
 
+/** Counts what `getFiles` would list, so pagination cannot disagree with the page. */
 export async function countFiles(db: D1Database, filter: FilesFilter = {}): Promise<number> {
-  const where = filter.formId ? "WHERE form_id = ?" : "";
+  const workspaceId = filter.workspaceId ?? DEFAULT_WORKSPACE;
+  const where = filter.formId ? "WHERE fo.workspace_id = ? AND fi.form_id = ?" : "WHERE fo.workspace_id = ?";
   const row = await db
-    .prepare(`SELECT COUNT(*) AS n FROM files ${where}`)
-    .bind(...(filter.formId ? [filter.formId] : []))
+    .prepare(`SELECT COUNT(*) AS n FROM files fi JOIN forms fo ON fo.id = fi.form_id ${where}`)
+    .bind(...(filter.formId ? [workspaceId, filter.formId] : [workspaceId]))
     .first<{ n: number }>();
   return row?.n ?? 0;
 }

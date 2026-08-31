@@ -552,17 +552,23 @@ export async function createWebhook(db: D1Database, formId: string, url: string)
   return row;
 }
 
-export async function listWebhooks(db: D1Database, formId?: string): Promise<WebhookWithContext[]> {
+/**
+ * Webhooks are reached through their form, which carries the workspace. Without the join
+ * the global webhook list showed every tenant's endpoints -- including their URLs.
+ */
+export async function listWebhooks(db: D1Database, formId?: string, workspaceId: string = DEFAULT_WORKSPACE): Promise<WebhookWithContext[]> {
   const { results } = formId
     ? await db
-        .prepare("SELECT w.*, f.name AS form_name FROM webhooks w LEFT JOIN forms f ON f.id = w.form_id WHERE w.form_id = ? ORDER BY w.created_at DESC")
-        .bind(formId)
+        .prepare("SELECT w.*, f.name AS form_name FROM webhooks w JOIN forms f ON f.id = w.form_id WHERE w.form_id = ? AND f.workspace_id = ? ORDER BY w.created_at DESC")
+        .bind(formId, workspaceId)
         .all<WebhookWithContext>()
     : await db
-        .prepare("SELECT w.*, f.name AS form_name FROM webhooks w LEFT JOIN forms f ON f.id = w.form_id ORDER BY w.created_at DESC")
+        .prepare("SELECT w.*, f.name AS form_name FROM webhooks w JOIN forms f ON f.id = w.form_id WHERE f.workspace_id = ? ORDER BY w.created_at DESC")
+        .bind(workspaceId)
         .all<WebhookWithContext>();
   return results ?? [];
 }
+
 
 export async function getWebhook(db: D1Database, id: string): Promise<WebhookWithContext | null> {
   return await db
@@ -1275,12 +1281,14 @@ export const CONTACTS_PAGE_SIZE = 25;
 
 export async function listContacts(
   db: D1Database,
-  opts: { status?: string; q?: string; page?: number } = {}
+  opts: { status?: string; q?: string; page?: number; workspaceId?: string } = {}
 ): Promise<ContactRow[]> {
   const page = Math.max(1, opts.page ?? 1);
   const offset = (page - 1) * CONTACTS_PAGE_SIZE;
-  const clauses: string[] = ["1=1"];
-  const binds: unknown[] = [];
+  // Contacts carry the workspace directly. The predicate replaces the old 1=1 placeholder
+  // so it is unconditional -- status and search only ever narrow within the workspace.
+  const clauses: string[] = ["workspace_id = ?"];
+  const binds: unknown[] = [opts.workspaceId ?? DEFAULT_WORKSPACE];
   if (opts.status) { clauses.push("status = ?"); binds.push(opts.status); }
   if (opts.q) {
     clauses.push("(email LIKE ? OR name LIKE ? OR company LIKE ? OR phone LIKE ?)");
@@ -1293,9 +1301,9 @@ export async function listContacts(
   return results ?? [];
 }
 
-export async function countContacts(db: D1Database, opts: { status?: string; q?: string } = {}): Promise<number> {
-  const clauses: string[] = ["1=1"];
-  const binds: unknown[] = [];
+export async function countContacts(db: D1Database, opts: { status?: string; q?: string; workspaceId?: string } = {}): Promise<number> {
+  const clauses: string[] = ["workspace_id = ?"];
+  const binds: unknown[] = [opts.workspaceId ?? DEFAULT_WORKSPACE];
   if (opts.status) { clauses.push("status = ?"); binds.push(opts.status); }
   if (opts.q) {
     clauses.push("(email LIKE ? OR name LIKE ? OR company LIKE ? OR phone LIKE ?)");
@@ -1403,12 +1411,20 @@ export async function recordDeadLetter(
   }
 }
 
-export async function listDeadLetters(db: D1Database, limit = 100): Promise<{ id: number; form_id: string; body: string; error: string; created_at: number; recovered_at: number | null }[]> {
+/** Dead letters are reached through their form, which carries the workspace. */
+export async function listDeadLetters(db: D1Database, limit = 100, workspaceId: string = DEFAULT_WORKSPACE): Promise<{ id: number; form_id: string; body: string; error: string; created_at: number; recovered_at: number | null }[]> {
   const { results } = await db
-    .prepare("SELECT * FROM dead_letters WHERE recovered_at IS NULL ORDER BY created_at DESC LIMIT ?")
-    .bind(limit).all<any>();
+    .prepare(
+      `SELECT d.id, d.form_id, d.body, d.error, d.created_at, d.recovered_at
+       FROM dead_letters d JOIN forms f ON f.id = d.form_id
+       WHERE f.workspace_id = ? AND d.recovered_at IS NULL
+       ORDER BY d.created_at DESC LIMIT ?`
+    )
+    .bind(workspaceId, limit)
+    .all<{ id: number; form_id: string; body: string; error: string; created_at: number; recovered_at: number | null }>();
   return results ?? [];
 }
+
 
 export async function countDeadLetters(db: D1Database): Promise<number> {
   const row = await db.prepare("SELECT COUNT(*) AS n FROM dead_letters WHERE recovered_at IS NULL").first<{ n: number }>();
