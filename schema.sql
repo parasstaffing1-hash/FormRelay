@@ -403,3 +403,14 @@ CREATE TABLE IF NOT EXISTS dead_letters (
 );
 
 CREATE INDEX IF NOT EXISTS idx_dead_letters_open ON dead_letters (created_at DESC) WHERE recovered_at IS NULL;
+
+-- Shared API rate-limit counters. One row per caller per fixed window; the cron sweeper
+-- deletes rows once their window closes. Lives in D1 rather than isolate memory so the
+-- limit holds across isolates.
+CREATE TABLE IF NOT EXISTS rate_counters (
+  bucket TEXT PRIMARY KEY,
+  window_start INTEGER NOT NULL,
+  count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_rate_counters_window ON rate_counters (window_start);

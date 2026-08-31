@@ -10,13 +10,10 @@ import {
 } from "./db";
 import { findApiKeyByHash, touchApiKey } from "./db";
 import { audit } from "./audit";
+import { consume, rateLimitHeaders } from "./ratelimit";
 
-// In-memory per-key rate limit — Caveat: this Map is per isolate / Worker instance,
-// not shared across edge isolates or restarts. It provides best-effort throttling
-// (approx 60 req/min per key) but is not a global distributed limiter. For strict
-// enforcement a Durable Object or KV-based counter would be needed.
-
-const rateLimit = new Map<string, { count: number; resetAt: number }>();
+// Per-key rate limit, counted in D1 so every isolate shares one window. See
+// `ratelimit.ts` for why this is not an in-memory Map and what the fixed window costs.
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX = 60;
 
@@ -50,15 +47,12 @@ api.use("*", async (c, next) => {
   const scope = key.scope || "read_write";
   if (isWrite && scope === "read") return c.json({ error: "API key is read-only" }, 403);
   if (!isWrite && scope === "write") return c.json({ error: "API key is write-only" }, 403);
-  const entry = rateLimit.get(key.id);
-  if (!entry || now > entry.resetAt) {
-    rateLimit.set(key.id, { count: 1, resetAt: now + RATE_WINDOW_MS });
-  } else {
-    if (entry.count >= RATE_MAX) {
-      return c.json({ error: "Rate limit exceeded" }, 429);
-    }
-    entry.count += 1;
+  const verdict = await consume(c.env.DB, `api:${key.id}`, RATE_MAX, RATE_WINDOW_MS, now);
+  const limitHeaders = rateLimitHeaders(RATE_MAX, verdict);
+  if (!verdict.allowed) {
+    return c.json({ error: "Rate limit exceeded", retry_after: verdict.retryAfter }, 429, limitHeaders);
   }
+  for (const [name, value] of Object.entries(limitHeaders)) c.header(name, value);
   try {
     await touchApiKey(c.env.DB, key.id);
   } catch {
