@@ -23,6 +23,8 @@ export type EmailMessage = {
   html: string;
   text?: string;
   replyTo?: string;
+  /** Stable key used by SendLayer to prevent duplicate sends after a retry. */
+  idempotencyKey?: string;
 };
 
 export type EmailResult = {
@@ -56,8 +58,17 @@ async function describeFailure(response: Response): Promise<string> {
   const body = await response.text().catch(() => "");
   if (!body) return `HTTP ${response.status}`;
   try {
-    const parsed = JSON.parse(body) as { message?: string; error?: string };
-    const detail = parsed.message ?? parsed.error;
+    const parsed = JSON.parse(body) as {
+      message?: unknown;
+      error?: unknown;
+      data?: { message?: unknown };
+    };
+    const detail =
+      typeof parsed.message === "string" ? parsed.message :
+      typeof parsed.error === "string" ? parsed.error :
+      parsed.error && typeof parsed.error === "object" && "message" in parsed.error
+        ? (parsed.error as { message?: unknown }).message
+        : parsed.data?.message;
     if (detail) return `HTTP ${response.status}: ${String(detail).slice(0, 200)}`;
   } catch {
     // Not JSON; fall through to the raw text.
@@ -96,6 +107,54 @@ export function resendProvider(apiKey: string): EmailProvider {
 }
 
 /**
+ * Native SendLayer adapter. SendLayer follows the Resend-compatible /v1/emails
+ * contract, but its response is wrapped in data and its reply-to field is
+ * snake_case. Keeping this mapping here avoids a vendor SDK and malformed requests.
+ */
+export function sendLayerProvider(url: string, apiKey: string): EmailProvider {
+  return {
+    name: "sendlayer",
+    async send(message) {
+      try {
+        const headers: Record<string, string> = {
+          Authorization: "Bearer " + apiKey,
+          "content-type": "application/json",
+        };
+        if (message.idempotencyKey) headers["Idempotency-Key"] = message.idempotencyKey;
+        const response = await fetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            from: message.from,
+            to: [message.to],
+            subject: message.subject,
+            html: message.html,
+            ...(message.text ? { text: message.text } : {}),
+            ...(message.replyTo ? { reply_to: message.replyTo } : {}),
+          }),
+          signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+        });
+        if (!response.ok) {
+          return { ok: false, provider: "sendlayer", status: response.status, error: await describeFailure(response) };
+        }
+        const payload = (await response.json().catch(() => ({}))) as {
+          id?: string;
+          data?: { id?: string };
+        };
+        return {
+          ok: true,
+          provider: "sendlayer",
+          status: response.status,
+          id: payload.data?.id ?? payload.id,
+        };
+      } catch (error) {
+        return { ok: false, provider: "sendlayer", error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  };
+}
+
+/**
  * Any provider exposing a JSON HTTP send endpoint (Postmark, Mailgun, SendGrid, Brevo, or
  * a self-hosted relay) can be driven through this shape. Configured with EMAIL_API_URL and
  * EMAIL_API_KEY so a deployment is not obliged to use a vendor SDK.
@@ -128,6 +187,10 @@ export function httpProvider(url: string, apiKey: string, name = "http"): EmailP
 export type EmailEnv = {
   RESEND_API_KEY?: string;
   MAIL_FROM?: string;
+  /** Full SendLayer POST endpoint, normally https://api.example.com/v1/emails. */
+  SENDLAYER_API_URL?: string;
+  /** Server-side SendLayer project API key; never expose this to the browser. */
+  SENDLAYER_API_KEY?: string;
   EMAIL_API_URL?: string;
   EMAIL_API_KEY?: string;
   EMAIL_PROVIDER?: string;
@@ -136,14 +199,32 @@ export type EmailEnv = {
 /** Returns null when no provider is configured, which is a skip rather than a failure. */
 export function selectProvider(env: EmailEnv): EmailProvider | null {
   const preferred = (env.EMAIL_PROVIDER ?? "").trim().toLowerCase();
+  const sendLayerUrl = env.SENDLAYER_API_URL || env.EMAIL_API_URL;
+  const sendLayerKey = env.SENDLAYER_API_KEY || env.EMAIL_API_KEY;
+  if (preferred === "sendlayer" || (!preferred && env.SENDLAYER_API_URL)) {
+    return sendLayerUrl && sendLayerKey ? sendLayerProvider(sendLayerUrl, sendLayerKey) : null;
+  }
   if (preferred === "http" || (!preferred && env.EMAIL_API_URL)) {
     return env.EMAIL_API_URL ? httpProvider(env.EMAIL_API_URL, env.EMAIL_API_KEY ?? "") : null;
   }
   return env.RESEND_API_KEY ? resendProvider(env.RESEND_API_KEY) : null;
 }
 
-export function senderAddress(env: EmailEnv): string {
-  return env.MAIL_FROM || "FormRelay <onboarding@resend.dev>";
+/**
+ * The From address, or null when there is no defensible one.
+ *
+ * The old fallback was a Resend sandbox address. That is a reasonable convenience *on
+ * Resend* — it lets a new install send before owning a domain — but it is actively wrong
+ * on any other provider: the message goes out claiming a domain the deployment does not
+ * own, and the provider rejects it. Returning null instead lets the caller skip with a
+ * clear reason rather than emit a send that cannot succeed.
+ */
+export function senderAddress(env: EmailEnv): string | null {
+  if (env.MAIL_FROM) return env.MAIL_FROM;
+  // The sandbox default applies only when Resend is genuinely the selected provider.
+  const provider = selectProvider(env);
+  if (provider?.name === "resend") return "FormRelay <onboarding@resend.dev>";
+  return null;
 }
 
 /* -------------------------------------------------------------------- content */
@@ -173,39 +254,59 @@ export function submissionEmailText(formName: string, data: Record<string, strin
 /** Skipped sends are reported distinctly from failures; neither is reported as success. */
 export type SendOutcome = { sent: boolean; skipped?: string; result?: EmailResult };
 
-export async function sendNotification(env: EmailEnv, form: FormRow, data: Record<string, string>): Promise<SendOutcome> {
+function idempotencyKey(form: FormRow, submissionId: number | null | undefined, kind: string): string | undefined {
+  return submissionId == null ? undefined : "formrelay:" + form.id + ":" + submissionId + ":" + kind;
+}
+
+export async function sendNotification(
+  env: EmailEnv,
+  form: FormRow,
+  data: Record<string, string>,
+  submissionId?: number | null,
+): Promise<SendOutcome> {
   const provider = selectProvider(env);
   if (!provider) return { sent: false, skipped: "no email provider configured" };
   if (!form.notify_email) return { sent: false, skipped: "form has no notification recipient" };
+  const from = senderAddress(env);
+  if (!from) return { sent: false, skipped: "MAIL_FROM is not set and the provider has no sandbox sender" };
 
   const replyTo = data._replyto || data.email || "";
   const result = await provider.send({
     to: form.notify_email,
-    from: senderAddress(env),
+    from,
     subject: `[${form.name}] ${data._subject || "New submission"}`,
     html: submissionEmailHtml(form.name, data),
     text: submissionEmailText(form.name, data),
     ...(/\S+@\S+\.\S+/.test(replyTo) ? { replyTo } : {}),
+    idempotencyKey: idempotencyKey(form, submissionId, "notification"),
   });
 
   if (!result.ok) throw new EmailDeliveryError(result);
   return { sent: true, result };
 }
 
-export async function sendAutoReply(env: EmailEnv, form: FormRow, data: Record<string, string>): Promise<SendOutcome> {
+export async function sendAutoReply(
+  env: EmailEnv,
+  form: FormRow,
+  data: Record<string, string>,
+  submissionId?: number | null,
+): Promise<SendOutcome> {
   const provider = selectProvider(env);
   if (!provider) return { sent: false, skipped: "no email provider configured" };
   if (!form.auto_reply) return { sent: false, skipped: "autoresponder disabled" };
 
   const to = data._replyto || data.email || "";
   if (!/\S+@\S+\.\S+/.test(to)) return { sent: false, skipped: "no valid respondent address" };
+  const from = senderAddress(env);
+  if (!from) return { sent: false, skipped: "MAIL_FROM is not set and the provider has no sandbox sender" };
 
   const result = await provider.send({
     to,
-    from: senderAddress(env),
+    from,
     subject: `Re: ${data._subject || `your submission to ${form.name}`}`,
     html: `<p>Thanks for reaching out — your message was received. We will get back to you soon.</p>`,
     text: "Thanks for reaching out - your message was received. We will get back to you soon.\n",
+    idempotencyKey: idempotencyKey(form, submissionId, "autoresponder"),
   });
 
   if (!result.ok) throw new EmailDeliveryError(result);

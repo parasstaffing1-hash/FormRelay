@@ -62,6 +62,31 @@ npm run migrate:status
 
 Nothing needs to be applied by hand, and re-running is safe.
 
+## 3b. If you are using PostgreSQL instead of D1
+
+The Worker supports either engine. With a Postgres URL configured, `env.DB` is backed by
+the adapter in `src/pgdriver.ts` and every query works unchanged.
+
+```bash
+node scripts/pg-init.mjs        # apply schema.postgres.sql
+npm run migrate:pg:baseline     # record the migrations that schema already contains
+npm run pg:smoke                # end-to-end check against the live database
+```
+
+Thereafter, upgrades are `npm run migrate:pg`. Each migration runs inside a transaction, so
+a failure rolls back in full rather than leaving the schema half-changed.
+
+`schema.postgres.sql` is generated — run `npm run pg:schema` after editing `schema.sql`,
+never edit it directly.
+
+Set the connection string as a secret, and prefer Hyperdrive for connection pooling (see
+the commented block in `wrangler.toml`) — Workers open a connection per isolate and
+Postgres caps concurrent connections.
+
+```bash
+npx wrangler secret put DATABASE_URL
+```
+
 ## 4. Set the secrets
 
 Two are required. Each command prompts for the value; nothing is written to the repo.
@@ -85,11 +110,17 @@ Optional secrets, each enabling one feature:
 
 | Secret | Enables |
 |---|---|
-| `RESEND_API_KEY` | notification emails, auto-replies, workflow email actions |
-| `MAIL_FROM` | sender identity, e.g. `FormRelay <you@yourdomain.com>` |
+| `SENDLAYER_API_URL` | full SendLayer `POST /v1/emails` endpoint |
+| `SENDLAYER_API_KEY` | server-side SendLayer project key; never ship it to the browser |
+| `EMAIL_PROVIDER` | set to `sendlayer` when using SendLayer |
+| `RESEND_API_KEY` | legacy fallback for notification emails via Resend |
+| `EMAIL_API_URL` | generic JSON email endpoint for other providers |
+| `EMAIL_API_KEY` | bearer token for `EMAIL_API_URL` |
+| `MAIL_FROM` | sender identity, e.g. `FormRelay <you@yourdomain.com>`; it must be authorized by SendLayer |
 | `TURNSTILE_SECRET_KEY` | Cloudflare Turnstile spam verification |
 
-`WORKSPACE_NAME` is a plain display name, not a secret — set it under `[vars]` in
+`TURNSTILE_SITE_KEY` is the public site key paired with `TURNSTILE_SECRET_KEY` when
+Turnstile is enabled. `WORKSPACE_NAME` is a plain display name, not a secret — set it under `[vars]` in
 `wrangler.toml` if you want something other than the default.
 
 ## 5. Deploy

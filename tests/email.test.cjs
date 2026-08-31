@@ -132,7 +132,9 @@ test('an alternative HTTP provider works through the same interface', async () =
 
 test('sender address falls back when MAIL_FROM is unset', () => {
   assert.equal(senderAddress({ MAIL_FROM: 'Me <me@acme.com>' }), 'Me <me@acme.com>');
-  assert.match(senderAddress({}), /@/);
+  // With Resend selected there is a sandbox sender to fall back on. With no provider, or a
+  // non-Resend one, there is not — see the sender-identity tests at the end of this file.
+  assert.match(senderAddress({ RESEND_API_KEY: 'k' }), /@/);
 });
 
 /* ---------------------------------------------------------------- content */
@@ -141,4 +143,37 @@ test('submission content escapes field values in both formats', () => {
   const html = submissionEmailHtml('Contact', { note: '<script>alert(1)</script>' });
   assert.ok(!html.includes('<script>'), 'HTML body must escape user content');
   assert.match(submissionEmailText('Contact', { note: 'plain' }), /note: plain/);
+});
+
+/* ---------- sender identity across providers ---------- */
+
+const { senderAddress: senderFor } = require('../.test-build/email.js');
+
+test('MAIL_FROM wins whenever it is set', () => {
+  assert.equal(senderFor({ MAIL_FROM: 'FormRelay <a@b.com>', RESEND_API_KEY: 'k' }), 'FormRelay <a@b.com>');
+  assert.equal(senderFor({ MAIL_FROM: 'FormRelay <a@b.com>', EMAIL_API_URL: 'https://x/send' }), 'FormRelay <a@b.com>');
+});
+
+test('the Resend sandbox sender applies only when Resend is the selected provider', () => {
+  assert.match(senderFor({ RESEND_API_KEY: 'k' }), /resend\.dev/);
+});
+
+test('a non-Resend provider with no MAIL_FROM has no sender rather than a borrowed one', () => {
+  // Sending From a resend.dev address through another provider is a guaranteed rejection.
+  assert.equal(senderFor({ EMAIL_API_URL: 'https://api.example.com/send', EMAIL_API_KEY: 'k' }), null);
+});
+
+test('no provider at all yields no sender', () => {
+  assert.equal(senderFor({}), null);
+});
+
+test('a send is skipped with a clear reason when there is no sender', async () => {
+  const { sendNotification } = require('../.test-build/email.js');
+  const out = await sendNotification(
+    { EMAIL_API_URL: 'https://api.example.com/send' },
+    { id: 'f1', name: 'Contact', notify_email: 'me@x.com' },
+    {}
+  );
+  assert.equal(out.sent, false);
+  assert.match(out.skipped, /MAIL_FROM/);
 });

@@ -98,6 +98,18 @@ The repository was pushed to `main` in the following feature commits:
 
 ## Remaining work
 
-The following capabilities remain partial or unimplemented and are intentionally not described as shipped: query-level workspace isolation proofs and ownership transfer; multi-condition builder editing beyond the first condition/action row; repeating subforms; richer client-side calculation updates; provider OAuth credential vaults and native record updates; QR rendering; payments; PDF generation; custom domains; AI assistance; logic simulator; cross-isolate API rate limiting; full CSRF token coverage; saved views across pages; and advanced enterprise scheduling.
+> **Note (2026-08-31):** this audit describes `main` as of 2026-08-26. The `security-hardening`
+> branch has since landed CSRF/origin hardening, CSP without `unsafe-inline`, QR rendering,
+> webhook retries, integrity receipts, contacts, the migration runner, cross-isolate API rate
+> limiting, and workspace-scoped form access. The list below is kept for history; see
+> `FEATURE_MATRIX.md` for current state.
+
+The following capabilities remain partial or unimplemented and are intentionally not described as shipped: ownership transfer; multi-condition builder editing beyond the first condition/action row; repeating subforms; richer client-side calculation updates; provider OAuth credential vaults and native record updates; payments; PDF generation; custom domains; AI assistance; logic simulator; saved views across pages; and advanced enterprise scheduling.
+
+Workspace isolation is now enforced in SQL for form reads, listings, creation, duplication,
+and the submission detail page. It is **not** yet enforced on the contacts, files, webhooks,
+or dead-letter listings, which still read across the whole database; those routes are only
+reachable by an authenticated member, so this is a tenancy gap rather than a public exposure,
+and it remains marked PARTIAL in the feature matrix.
 
 These limitations are also reflected in `docs/FEATURE_MATRIX.md` and should be resolved before presenting FormRelay as feature-complete parity with Typeform, Tally, or Jotform.

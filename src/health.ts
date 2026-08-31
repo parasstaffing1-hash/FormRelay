@@ -21,7 +21,7 @@ export function checkFormHealth(form: FormRow, hasEmailProvider: boolean): Healt
       try { new URL(redirect); } catch { items.push({ level: "error", message: "The redirect URL is invalid." }); }
     }
   }
-  if (form.notify_email && !hasEmailProvider) items.push({ level: "warning", message: "A notification email is configured but RESEND_API_KEY is missing." });
+  if (form.notify_email && !hasEmailProvider) items.push({ level: "warning", message: "A notification email is configured but no email provider is configured." });
   if (items.length === 0) items.push({ level: "ok", message: "No blocking issues found." });
   return items;
 }

@@ -36,7 +36,7 @@ Legend — **DONE** = UI works + backend works + data persists + errors handled 
 | Audit log (form/key/response actions) | PARTIAL | 3 | — | cover webhook/integration actions | P2 | schema | partial |
 | Templates (preset schemas) | DONE | 4 | Tally | — | P1 | schema | smoke ✅ |
 | Webhook HMAC secret rotation / reveal | PARTIAL | 3 | Formspree | — | P2 | — | manual |
-| Workspace multi-tenant (members/roles) | PARTIAL | 4 | Typeform | full query-level workspace isolation and owner role enforcement | P1 | users/memberships | smoke ✅ |
+| Workspace multi-tenant (members/roles) | PARTIAL | 4 | Typeform | forms and the submission detail are workspace-scoped; contacts, files, webhooks and dead-letter listings are not | P1 | users/memberships | unit ✅ |
 | Invitations | DONE | 4 | Typeform | email delivery and invite revocation UI | P1 | memberships | smoke ✅ |
 | Conditional logic engine | PARTIAL | 3 | Typeform | multi-condition UI, richer validation | P1 | schema v2 | smoke ✅ |
 | Logic simulator / map view | NOT IMPLEMENTED | — | Typeform | — | P2 | logic | — |
@@ -75,7 +75,7 @@ Legend — **DONE** = UI works + backend works + data persists + errors handled 
 | Version history restore | DONE | 5 | Typeform | diff view and named releases | P2 | form_versions | typecheck ✅ |
 | AI features (prompt→form, suggestions) | NOT IMPLEMENTED | — | Fillout | provider-agnostic AI | P2 | — | — |
 | Offline collection (PWA) | NOT IMPLEMENTED | — | — | — | P2 | — | — |
-| Rate limit (API keys) | PARTIAL | 3 | — | cross-isolate (DO/KV) | P2 | Durable Object | — |
+| Rate limit (API keys) | DONE | 3 | — | — | P2 | rate_counters (D1) | unit ✅ |
 | **Proof-of-work spam gate** (no CAPTCHA, no third party) | DONE | 4 | *none* | worker-thread solver for big difficulties | P1 | — | unit + smoke |
 | **Anonymous-but-unique** (blinded identity) | DONE | 4 | *none* | — | P1 | schema | unit + smoke |
 | **Consent receipts** (versioned wording) | DONE | 4 | *none* | show receipt in the portal | P1 | schema | unit + smoke |
