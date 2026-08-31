@@ -40,11 +40,20 @@ database_id = "the-uuid-it-printed"
 
 ```bash
 npx wrangler d1 execute formrelay --remote --file=./schema.sql
+npm run migrate:remote
 ```
 
-`schema.sql` is idempotent and already includes every table, so a brand-new database needs
-nothing from `migrations/`. Only pre-existing databases apply those — see
-"Upgrading an existing install" in the README.
+`schema.sql` creates every table for a new database. `npm run migrate:remote` then records
+which migrations that shape already satisfies, so later upgrades apply only what is missing.
+
+The runner keeps a `schema_migrations` table and applies pending files in order, stopping at
+the first failure rather than continuing into a half-applied state:
+
+```bash
+npm run migrate:status
+```
+
+Nothing needs to be applied by hand, and re-running is safe.
 
 ## 4. Set the secrets
 
