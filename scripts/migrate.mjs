@@ -9,9 +9,12 @@
  * This keeps a `schema_migrations` table, applies only what is missing, and stops at the
  * first failure rather than continuing into an inconsistent state.
  *
- *   node scripts/migrate.mjs            apply pending migrations locally
- *   node scripts/migrate.mjs --remote   apply them to the deployed database
- *   node scripts/migrate.mjs --status   list applied and pending, change nothing
+ *   node scripts/migrate.mjs             apply pending migrations locally
+ *   node scripts/migrate.mjs --remote    apply them to the deployed database
+ *   node scripts/migrate.mjs --status    list applied and pending, change nothing
+ *   node scripts/migrate.mjs --baseline  record every migration as applied without
+ *                                        running it, for a database just created from
+ *                                        schema.sql (which already has the current shape)
  */
 import { execFile } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
@@ -34,6 +37,7 @@ const DB_NAME = "formrelay";
 const args = new Set(process.argv.slice(2));
 const remote = args.has("--remote");
 const statusOnly = args.has("--status");
+const baseline = args.has("--baseline");
 const scope = remote ? "--remote" : "--local";
 
 /** Runs one SQL statement through wrangler and returns stdout. */
@@ -79,6 +83,19 @@ async function main() {
   console.log(`database: ${DB_NAME} (${remote ? "remote" : "local"})`);
   console.log(`applied:  ${applied.size}`);
   console.log(`pending:  ${pending.length}`);
+
+  // A database created from schema.sql already has the current shape, so replaying the
+  // migrations that built it would fail on the first ALTER TABLE. Baselining records them
+  // as satisfied so only genuinely new migrations ever run.
+  if (baseline) {
+    for (const file of pending) {
+      await sql(`INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ('${file}', ${Date.now()})`);
+      console.log(`  recorded  ${file}`);
+    }
+    console.log(`
+Baselined ${pending.length} migration(s). None were executed.`);
+    return;
+  }
 
   if (statusOnly || pending.length === 0) {
     for (const f of files) console.log(`  ${applied.has(f) ? "applied" : "PENDING"}  ${f}`);

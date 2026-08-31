@@ -40,11 +40,18 @@ database_id = "the-uuid-it-printed"
 
 ```bash
 npx wrangler d1 execute formrelay --remote --file=./schema.sql
-npm run migrate:remote
+node scripts/migrate.mjs --remote --baseline
 ```
 
-`schema.sql` creates every table for a new database. `npm run migrate:remote` then records
-which migrations that shape already satisfies, so later upgrades apply only what is missing.
+`schema.sql` creates every table, so a new database already has the current shape.
+Baselining records the existing migrations as satisfied **without running them** — replaying
+them would fail on the first `ALTER TABLE`, because those columns are already there.
+
+From then on, upgrades are just:
+
+```bash
+npm run migrate:remote
+```
 
 The runner keeps a `schema_migrations` table and applies pending files in order, stopping at
 the first failure rather than continuing into a half-applied state:
