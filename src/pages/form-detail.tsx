@@ -247,7 +247,7 @@ export const FormDetailPage: FC<{
             </tbody>
           </table>
           <p class="t2 small mt16">
-            Optional: protect this form with a Cloudflare Turnstile widget — set the <code class="mono">TURNSTILE_SECRET_KEY</code> secret on your Worker.
+            Optional: protect this form with Cloudflare Turnstile — configure both <code class="mono">TURNSTILE_SITE_KEY</code> and the <code class="mono">TURNSTILE_SECRET_KEY</code> secret, plus the exact production hostname in <code class="mono">TURNSTILE_HOSTNAMES</code>.
           </p>
         </div>
       ) : null}
@@ -258,8 +258,8 @@ export const FormDetailPage: FC<{
             <div class="callout mb16">
               <IconAlert size={15} />
               <div>
-                Email delivery isn't configured yet. Add a <strong>RESEND_API_KEY</strong> secret to your
-                Worker (<code class="mono">wrangler secret put RESEND_API_KEY</code>) to enable notifications.
+                Email delivery isn't configured yet. Add your provider endpoint and API key secrets to your
+                Worker (<code class="mono">EMAIL_API_URL</code> and <code class="mono">EMAIL_API_KEY</code>) to enable notifications.
                 Submissions are always stored regardless of email.
               </div>
             </div>
