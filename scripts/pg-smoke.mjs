@@ -108,6 +108,17 @@ try {
 
   await DB.prepare("DELETE FROM files WHERE id = ?").bind(fileId).run();
 
+  // 8. Analytics. Both queries use SQLite-only date and JSON functions; if the translation
+  // regresses, the admin dashboard 500s on every load rather than degrading.
+  await db_.recordFormEvent(DB, form.id, "view", "https://ref.example", { utm_source: "newsletter", utm_medium: "email", utm_campaign: "launch" });
+  await db_.getDashboardAnalytics(DB);
+  check("dashboard analytics runs on Postgres", true, true);
+  await db_.recordFormEvent(DB, form.id, "submission", "", { country: "IN" });
+  const analytics = await db_.getAnalytics(DB, form.id);
+  check("UTM attribution is extracted from JSON", (analytics.campaigns ?? []).some((c) => c.source === "newsletter"), true);
+  check("country attribution resolves a name and a share", analytics.countries[0]?.name, "India");
+  await DB.prepare("DELETE FROM form_events WHERE form_id = ?").bind(form.id).run();
+
   // cleanup
   await DB.prepare("DELETE FROM submissions WHERE form_id = ?").bind(form.id).run();
   await DB.prepare("DELETE FROM memberships WHERE workspace_id = ?").bind(ws).run();

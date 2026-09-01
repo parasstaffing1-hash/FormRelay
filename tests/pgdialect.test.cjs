@@ -108,3 +108,43 @@ test('numeric-looking form answers are not silently converted', () => {
 test('a null row stays null', () => {
   assert.equal(coerceRow(null), null);
 });
+
+/* ---------- analytics: date bucketing and JSON extraction ---------- */
+
+test('the analytics day-bucket expression translates to Postgres', () => {
+  // This exact query drives the /admin dashboard. Untranslated, the whole page 500s.
+  const out = toPostgres(
+    "SELECT strftime('%Y-%m-%d', datetime(created_at/1000, 'unixepoch')) AS d, COUNT(*) AS c FROM form_events GROUP BY d"
+  );
+  assert.match(out, /to_char\(to_timestamp\(created_at\/1000\), 'YYYY-MM-DD'\) AS d/);
+  assert.doesNotMatch(out, /strftime|datetime/);
+});
+
+test('json_extract becomes a Postgres JSON accessor', () => {
+  const out = toPostgres("SELECT json_extract(metadata_json, '$.utm_source') AS source FROM form_events");
+  assert.match(out, /\(metadata_json::json->>'utm_source'\) AS source/);
+  assert.doesNotMatch(out, /json_extract/);
+});
+
+test('all three UTM extractions in one statement translate', () => {
+  const out = toPostgres(
+    "SELECT json_extract(metadata_json, '$.utm_source') AS source, json_extract(metadata_json, '$.utm_medium') AS medium, json_extract(metadata_json, '$.utm_campaign') AS campaign FROM form_events"
+  );
+  assert.equal((out.match(/::json->>/g) || []).length, 3);
+});
+
+test('an unmapped date format is refused rather than guessed at', () => {
+  // A wrong bucket returns plausible numbers, which is the worst possible failure for
+  // analytics -- so anything outside SQLITE_DATE_FORMATS must not translate.
+  assert.throws(
+    () => toPostgres("SELECT strftime('%W', datetime(created_at/1000, 'unixepoch')) FROM form_events"),
+    /Untranslatable SQL/
+  );
+});
+
+test('a nested json path is refused rather than silently returning null', () => {
+  assert.throws(
+    () => toPostgres("SELECT json_extract(metadata_json, '$.a.b') FROM form_events"),
+    /Untranslatable SQL/
+  );
+});

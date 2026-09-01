@@ -4,6 +4,7 @@ import {
   ApiKeyRow, WorkflowRow, WorkflowRunRow, WorkflowStepRow, UserRow, MembershipRow, InvitationRow, ContactRow,
 } from "./types";
 import { ChainLink, computeRowHash, genesisHash } from "./integrity";
+import { rankCountries } from "./geo";
 import { SubmissionEvent } from "./events";
 
 const ALPHABET = "abcdefghijkmnopqrstuvwxyz23456789";
@@ -444,6 +445,10 @@ export type FormAnalytics = {
   spam: number;
   referrers: { referer: string; count: number }[];
   campaigns: { source: string; medium: string; campaign: string; count: number }[];
+  /** Where submissions came from, most first. Empty until events carry a country. */
+  countries: { code: string; name: string; flag: string; count: number; share: number }[];
+  /** Where views came from, for comparison against where they actually convert. */
+  viewCountries: { code: string; name: string; flag: string; count: number; share: number }[];
 };
 export type DashboardAnalytics = { daily: AnalyticsDaily[] };
 
@@ -503,6 +508,28 @@ export async function getAnalytics(db: D1Database, formId: string): Promise<Form
   const viewMap = new Map<string, number>();
   for (const row of eventRows.results ?? []) viewMap.set(row.d, row.c);
   for (const bucket of dailyViews) bucket.count = viewMap.get(bucket.date) ?? 0;
+  // Country attribution, split by event kind. Views and submissions are counted separately
+  // on purpose: the interesting number is not where traffic comes from but where it
+  // converts, and a country can be large in one and absent from the other.
+  const [submissionCountryRows, viewCountryRows] = await Promise.all([
+    db
+      .prepare(
+        `SELECT json_extract(metadata_json, '$.country') AS code, COUNT(*) AS count
+         FROM form_events WHERE form_id = ? AND kind = 'submission'
+         GROUP BY code ORDER BY count DESC LIMIT 20`
+      )
+      .bind(formId)
+      .all<{ code: string | null; count: number }>(),
+    db
+      .prepare(
+        `SELECT json_extract(metadata_json, '$.country') AS code, COUNT(*) AS count
+         FROM form_events WHERE form_id = ? AND kind = 'view'
+         GROUP BY code ORDER BY count DESC LIMIT 20`
+      )
+      .bind(formId)
+      .all<{ code: string | null; count: number }>(),
+  ]);
+
   const campaignRows = await db.prepare("SELECT json_extract(metadata_json, '$.utm_source') AS source, json_extract(metadata_json, '$.utm_medium') AS medium, json_extract(metadata_json, '$.utm_campaign') AS campaign, COUNT(*) AS count FROM form_events WHERE form_id = ? AND kind = 'view' GROUP BY source, medium, campaign ORDER BY count DESC LIMIT 10").bind(formId).all<{ source: string | null; medium: string | null; campaign: string | null; count: number }>();
   return {
     daily,
@@ -512,6 +539,11 @@ export async function getAnalytics(db: D1Database, formId: string): Promise<Form
     spam: spamRow?.n ?? 0,
     referrers: refRows.results ?? [],
     campaigns: (campaignRows.results ?? []).filter((row) => row.source || row.medium || row.campaign).map((row) => ({ source: row.source ?? "(direct)", medium: row.medium ?? "—", campaign: row.campaign ?? "—", count: row.count })),
+    // Rows with no country (local development, or events recorded before this shipped) are
+    // dropped rather than bucketed as "Unknown", which would overstate a country that does
+    // not exist. Shares are taken over the rows that do have one.
+    countries: rankCountries((submissionCountryRows.results ?? []).filter((row) => row.code).map((row) => ({ code: row.code!, count: row.count }))),
+    viewCountries: rankCountries((viewCountryRows.results ?? []).filter((row) => row.code).map((row) => ({ code: row.code!, count: row.count }))),
   };
 }
 

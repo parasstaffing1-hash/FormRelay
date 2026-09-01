@@ -94,13 +94,54 @@ export function translateLike(sql: string): string {
   return sql.replace(/\bLIKE\b/gi, "ILIKE").replace(/\bNOT\s+ILIKE\b/gi, "NOT ILIKE");
 }
 
+/**
+ * SQLite date formatting -> Postgres.
+ *
+ * Analytics buckets events by day with
+ *   strftime('%Y-%m-%d', datetime(created_at/1000, 'unixepoch'))
+ * which is SQLite-only. Postgres spells the same thing
+ *   to_char(to_timestamp(created_at/1000), 'YYYY-MM-DD')
+ *
+ * Only the epoch-seconds form this codebase uses is handled. Anything else falls through
+ * to `assertTranslatable` and is refused, because a half-understood date expression that
+ * returns plausible-but-wrong buckets is far worse than one that will not run.
+ */
+export function translateDateFunctions(sql: string): string {
+  let out = sql.replace(/datetime\(([^,()]*(?:\([^()]*\))?[^,()]*)\s*,\s*'unixepoch'\s*\)/gi, (_m, expr) => `to_timestamp(${String(expr).trim()})`);
+  out = out.replace(/strftime\(\s*'([^']+)'\s*,\s*([^;]*?)\s*\)\s*(AS|FROM|,|$)/gi, (match, fmt, expr, tail) => {
+    const mapped = SQLITE_DATE_FORMATS[String(fmt)];
+    if (!mapped) return match;
+    return `to_char(${String(expr).trim()}, '${mapped}')${tail ? " " + tail : ""}`;
+  });
+  return out;
+}
+
+/** Only the formats this codebase uses. Guessing at others invites silently wrong buckets. */
+const SQLITE_DATE_FORMATS: Record<string, string> = {
+  "%Y-%m-%d": "YYYY-MM-DD",
+  "%Y-%m": "YYYY-MM",
+  "%Y": "YYYY",
+};
+
+/**
+ * SQLite json_extract(col, '$.key') -> Postgres (col::json->>'key').
+ *
+ * Restricted to single-level keys, which is all the UTM attribution query uses. Nested
+ * paths and array indexes are left alone and therefore refused, rather than mistranslated
+ * into an expression that quietly returns null for every row.
+ */
+export function translateJsonExtract(sql: string): string {
+  return sql.replace(/json_extract\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*,\s*'\$\.([A-Za-z_][A-Za-z0-9_]*)'\s*\)/gi, (_m, column, key) => `(${column}::json->>'${key}')`);
+}
+
 /** Constructs this translator knowingly does not handle. Loud beats subtly wrong. */
 const UNSUPPORTED: { pattern: RegExp; why: string }[] = [
   { pattern: /\bAUTOINCREMENT\b/i, why: "AUTOINCREMENT is DDL-only; use the Postgres schema file" },
   { pattern: /\bPRAGMA\b/i, why: "PRAGMA is SQLite-only" },
   { pattern: /\bGROUP_CONCAT\s*\(/i, why: "GROUP_CONCAT is spelled STRING_AGG in Postgres" },
-  { pattern: /\bdatetime\s*\(/i, why: "SQLite datetime() has no direct Postgres equivalent" },
-  { pattern: /\bstrftime\s*\(/i, why: "SQLite strftime() has no direct Postgres equivalent" },
+  { pattern: /\bdatetime\s*\(/i, why: "unrecognised datetime() form; only datetime(x, 'unixepoch') is translated" },
+  { pattern: /\bstrftime\s*\(/i, why: "unrecognised strftime() format; see SQLITE_DATE_FORMATS" },
+  { pattern: /\bjson_extract\s*\(/i, why: "unrecognised json_extract() path; only single-level $.key is translated" },
 ];
 
 /** Throws when a statement uses something this module would otherwise mistranslate. */
@@ -112,9 +153,12 @@ export function assertTranslatable(sql: string): void {
 
 /** Full statement translation, in the order the rules must apply. */
 export function toPostgres(sql: string): string {
-  assertTranslatable(sql);
-  // Placeholders are numbered last so earlier rewrites cannot shift the parameter order.
-  return numberPlaceholders(translateLike(translateInsertOr(sql)));
+  // Date and JSON rewrites run BEFORE the reject check, so the check only ever sees what
+  // the rules could not handle. Placeholders are numbered last so no earlier rewrite can
+  // shift the parameter order.
+  const rewritten = translateJsonExtract(translateDateFunctions(sql));
+  assertTranslatable(rewritten);
+  return numberPlaceholders(translateLike(translateInsertOr(rewritten)));
 }
 
 /**

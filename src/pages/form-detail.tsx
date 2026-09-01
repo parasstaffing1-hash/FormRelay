@@ -400,7 +400,7 @@ export const FormDetailPage: FC<{
 };
 
 const AnalyticsView: FC<{ analytics: FormAnalytics }> = ({ analytics }) => {
-  const { daily, dailyViews, views, total, spam, referrers, campaigns } = analytics;
+  const { daily, dailyViews, views, total, spam, referrers, campaigns, countries, viewCountries } = analytics;
   const completion = views > 0 ? (total / views) * 100 : 0;
   const spamRate = total > 0 ? (spam / total) * 100 : 0;
   const max = Math.max(...daily.map((d) => d.count), 1);
@@ -452,6 +452,44 @@ const AnalyticsView: FC<{ analytics: FormAnalytics }> = ({ analytics }) => {
         <div class="flex between mb8"><span class="small" style="font-weight:600">Funnel signals — last 7 days</span><span class="muted small">views vs. submissions</span></div>
         <div style="display:grid;gap:8px">{dailyViews.slice(-7).map((view, i) => { const submitted = daily.slice(-7)[i]?.count ?? 0; const width = view.count ? Math.min(100, submitted / view.count * 100) : 0; return <div><div class="flex between small"><span class="muted">{view.date.slice(5)}</span><span>{fmtNumber(view.count)} views · {fmtNumber(submitted)} submissions</span></div><div style="height:6px;background:var(--border);border-radius:999px;margin-top:4px"><div style={`height:6px;width:${width}%;background:var(--primary);border-radius:999px`}></div></div></div>; })}</div>
       </div>
+
+      {countries.length || viewCountries.length ? (
+        <div class="card mb16">
+          <div class="card-h">Countries</div>
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>Country</th>
+                <th class="num">Submissions</th>
+                <th class="num">Share</th>
+                <th class="num">Views</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(countries.length ? countries : viewCountries).map((row) => {
+                // Views are looked up by code rather than shown as a parallel list: a
+                // country can convert without ranking in views, and vice versa, so pairing
+                // them on the same row is the comparison worth seeing.
+                const seen = viewCountries.find((v) => v.code === row.code);
+                return (
+                  <tr>
+                    <td>
+                      <span aria-hidden="true" style="margin-right:8px">{row.flag}</span>
+                      {row.name}
+                    </td>
+                    <td class="num">{countries.length ? fmtNumber(row.count) : "—"}</td>
+                    <td class="num">{countries.length ? `${row.share}%` : "—"}</td>
+                    <td class="num">{seen ? fmtNumber(seen.count) : "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {!countries.length ? (
+            <div class="card-b"><p class="small t2">No submissions with a country yet — showing where views came from.</p></div>
+          ) : null}
+        </div>
+      ) : null}
 
       {campaigns.length ? <div class="card mb16"><div class="card-h">Campaign attribution</div><table class="tbl"><thead><tr><th>Source</th><th>Medium</th><th>Campaign</th><th class="num">Views</th></tr></thead><tbody>{campaigns.map((campaign) => <tr><td>{campaign.source}</td><td>{campaign.medium}</td><td>{campaign.campaign}</td><td class="num">{fmtNumber(campaign.count)}</td></tr>)}</tbody></table></div> : null}
 

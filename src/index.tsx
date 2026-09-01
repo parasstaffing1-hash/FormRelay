@@ -152,6 +152,7 @@ import { checkSpam, normalizePayload } from "./spam";
 import { deliverSubmission, sendTestWebhook, sweepRetries } from "./webhooks";
 import { TwoFactorPage } from "./pages/two-factor";
 import { sweepRateCounters } from "./ratelimit";
+import { countryFromRequest, rankCountries } from "./geo";
 import {
   verify as verifyTotp,
   generateSecret,
@@ -307,9 +308,21 @@ async function verifyUserSessionToken(token: string | undefined, secret: string)
   return (await hmacVerify(payload, parts[3], secret)) && Number(parts[2]) > Date.now();
 }
 
-function trackingMetadata(url: string): Record<string, string> {
+/**
+ * What gets recorded alongside a view or submission event.
+ *
+ * `cf` carries Cloudflare's request properties, from which only the country is taken --
+ * see geo.ts for why city and coordinates are deliberately left out. Empty values are
+ * dropped rather than stored as "", so a missing country is an absent key and never gets
+ * counted as a country named "".
+ */
+function trackingMetadata(url: string, cf?: unknown): Record<string, string> {
   const params = new URL(url).searchParams;
-  return Object.fromEntries(["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content"].map((key) => [key, params.get(key) || ""]).filter(([, value]) => value));
+  const utm = ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content"].map(
+    (key) => [key, params.get(key) || ""] as [string, string]
+  );
+  const country = countryFromRequest(cf);
+  return Object.fromEntries([...utm, ["country", country] as [string, string]].filter(([, value]) => value));
 }
 
 function originOf(url: string): string {
@@ -983,7 +996,7 @@ app.post("/f/:id", async (c) => {
       c.executionCtx.waitUntil(
         Promise.allSettled([
           trackEmail("notification", submissionId, form, data, sendNotification(c.env, form, data, submissionId)),
-          recordFormEvent(c.env.DB, formId, "submission", referer, trackingMetadata(c.req.url)),
+          recordFormEvent(c.env.DB, formId, "submission", referer, trackingMetadata(c.req.url, c.req.raw.cf)),
           trackEmail("autoresponder", submissionId, form, data, sendAutoReply(c.env, form, data, submissionId)),
           ...(submissionId !== null
             ? activeHooks.map((h) => track("webhook", deliverSubmission(c.env.DB, h, { id: form.id, name: form.name }, submissionId, data, createdAt)))
@@ -1154,7 +1167,7 @@ app.get("/f/:id", async (c) => {
   }
     c.executionCtx.waitUntil(Promise.all([
       incrementFormViews(c.env.DB, form.id),
-      recordFormEvent(c.env.DB, form.id, "view", c.req.header("referer") || "", trackingMetadata(c.req.url)),
+      recordFormEvent(c.env.DB, form.id, "view", c.req.header("referer") || "", trackingMetadata(c.req.url, c.req.raw.cf)),
     ]));
   const origin = originOf(c.req.url);
   const trustSecret = c.env.PREFILL_SECRET || c.env.SESSION_SECRET;
