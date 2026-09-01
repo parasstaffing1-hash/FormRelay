@@ -5,8 +5,9 @@ run those yourself — the rest can be handed off.
 
 ## 0. Prerequisites
 
-A Cloudflare account (the free plan is enough). Workers, D1, and — only if you want file
-uploads — R2 are all available on it.
+A Cloudflare account (the free plan is enough). This checkout is configured to use the
+existing PostgreSQL database through `DATABASE_URL`; D1 remains supported as an alternative.
+R2 is already bound for file uploads and large-payload spillover.
 
 ## 1. Sign in to Cloudflare
 
@@ -20,7 +21,31 @@ Opens a browser for OAuth. Confirm it worked:
 npx wrangler whoami
 ```
 
-## 2. Create the production D1 database
+## 2. Prepare the production database
+
+### Recommended: use the existing PostgreSQL database
+
+The current `wrangler.toml` intentionally does not contain a fake D1 id. Initialize the
+PostgreSQL schema from a machine that can reach the database, record the current migrations,
+and run the smoke check:
+
+```bash
+npm run pg:init
+npm run migrate:pg:baseline
+npm run pg:smoke
+```
+
+For the first small deployment, set the connection string as a Worker secret:
+
+```bash
+npx wrangler secret put DATABASE_URL
+```
+
+For higher traffic, create Hyperdrive for the same database, uncomment the `[[hyperdrive]]`
+block in `wrangler.toml`, and remove the raw `DATABASE_URL` secret. Do not commit either
+credential.
+
+### Alternative: use Cloudflare D1
 
 ```bash
 npx wrangler d1 create formrelay
@@ -62,7 +87,7 @@ npm run migrate:status
 
 Nothing needs to be applied by hand, and re-running is safe.
 
-## 3b. If you are using PostgreSQL instead of D1
+## PostgreSQL migration commands
 
 The Worker supports either engine. With a Postgres URL configured, `env.DB` is backed by
 the adapter in `src/pgdriver.ts` and every query works unchanged.
@@ -118,6 +143,8 @@ Optional secrets, each enabling one feature:
 | `EMAIL_API_KEY` | bearer token for `EMAIL_API_URL` |
 | `MAIL_FROM` | sender identity, e.g. `FormRelay <you@yourdomain.com>`; it must be authorized by SendLayer |
 | `TURNSTILE_SECRET_KEY` | Cloudflare Turnstile spam verification |
+| `TURNSTILE_SITE_KEY` | public Turnstile site key rendered on visitor-facing forms |
+| `TURNSTILE_HOSTNAMES` | comma-separated hostnames accepted by Siteverify; never include local hosts in production |
 
 `TURNSTILE_SITE_KEY` is the public site key paired with `TURNSTILE_SECRET_KEY` when
 Turnstile is enabled. `WORKSPACE_NAME` is a plain display name, not a secret — set it under `[vars]` in
@@ -150,16 +177,16 @@ Expect a CSP header on the response.
 
 Then create a form in the dashboard, publish it, and submit to its `POST /f/:id` endpoint.
 
-## Optional: file uploads (R2)
+## 7. File uploads (R2)
 
-Uploads work without this — the bytes just aren't persisted, and the submission stores
-`[file: name]`. To keep the files:
+The checked-in configuration already binds `formrelay-files`. Create the bucket once if it
+does not exist:
 
 ```bash
 npx wrangler r2 bucket create formrelay-files
 ```
 
-Uncomment the `[[r2_buckets]]` block in `wrangler.toml`, then `npm run deploy` again.
+Then deploy again if you created it after the first deployment.
 
 ## Notes for production
 

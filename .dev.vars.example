@@ -1,6 +1,13 @@
 ADMIN_PASSWORD=changeme
 SESSION_SECRET=paste-a-long-random-string-here
+# Use a local/PostgreSQL connection for the current deployment path. Keep the real value in .dev.vars only.
+DATABASE_URL=
 RESEND_API_KEY=
-MAIL_FROM=FormRelay <onboarding@resend.dev>
+EMAIL_PROVIDER=sendlayer
+SENDLAYER_API_URL=http://localhost:3001/v1/emails
+SENDLAYER_API_KEY=
+MAIL_FROM=FormRelay <verified-sender@example.com>
 TURNSTILE_SECRET_KEY=
+TURNSTILE_SITE_KEY=
+TURNSTILE_HOSTNAMES=localhost,127.0.0.1
 WORKSPACE_NAME=My workspace

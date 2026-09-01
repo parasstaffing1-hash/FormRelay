@@ -1,13 +1,13 @@
 # 📮 FormRelay
 
-**Forms in. Data anywhere.** Self-hosted, open-source Formspree alternative — point any HTML form at an endpoint and get spam-filtered storage, email alerts, and webhooks on a 100% free-tier stack (Hono SSR JSX + Cloudflare Workers + D1 + Resend). Notion-inspired admin UI.
+**Forms in. Data anywhere.** Self-hosted, open-source Formspree alternative — point any HTML form at an endpoint and get spam-filtered storage, email alerts, and webhooks on a 100% free-tier stack (Hono SSR JSX + Cloudflare Workers + D1 + SendLayer). Notion-inspired admin UI.
 
 ## Features
 
 - **Form endpoints** — `POST /f/:formId` accepts HTML form-encoded, multipart, or JSON; CORS enabled
 - **File uploads** — multipart attachments stored in Cloudflare R2 when a binding named `FILES` is configured (gracefully degrades to `[file: name]` text without it)
 - **Spam protection** — honeypot fields (`_gotcha`/`_honeypot`/`_hp`), per-IP rate limit (10/min), optional Cloudflare Turnstile
-- **Email** — per-form notifications + optional auto-reply to the submitter via Resend
+- **Email** — per-form notifications + optional auto-reply to the submitter via the native SendLayer adapter (with legacy Resend fallback)
 - **Webhooks** — HMAC-SHA256 signed payloads (`whsec_…` secrets), automatic retries with backoff, delivery history with status codes, one-click test sends
 - **Submissions inbox** — global browser with form/spam filters, detail view with metadata and raw JSON
 - **CSV export** per form
@@ -38,9 +38,15 @@ Secrets (`npx wrangler secret put <NAME>` after `npx wrangler login`):
 |---|---|---|
 | `ADMIN_PASSWORD` | yes | dashboard login |
 | `SESSION_SECRET` | yes | long random string for session cookies |
-| `RESEND_API_KEY` | no | enables notifications/auto-reply (free at resend.com) |
-| `MAIL_FROM` | no | e.g. `FormRelay <you@yourdomain.com>` |
-| `TURNSTILE_SECRET_KEY` | no | Turnstile verification |
+| `DATABASE_URL` | no | PostgreSQL connection string when not using D1 or Hyperdrive; keep it server-side |
+| `SENDLAYER_API_URL` | no | SendLayer `POST /v1/emails` endpoint; keep this server-side |
+| `SENDLAYER_API_KEY` | no | SendLayer project key; never expose it in browser code |
+| `EMAIL_PROVIDER` | no | set to `sendlayer` to use the native Resend-compatible adapter |
+| `RESEND_API_KEY` | no | legacy fallback for notifications/auto-reply |
+| `MAIL_FROM` | no | e.g. `FormRelay <you@yourdomain.com>`; must be authorized by SendLayer |
+| `TURNSTILE_SECRET_KEY` | no | Turnstile server-side verification secret |
+| `TURNSTILE_SITE_KEY` | no | public Turnstile site key rendered on visitor-facing forms |
+| `TURNSTILE_HOSTNAMES` | no | comma-separated hostnames accepted by Siteverify |
 | `WORKSPACE_NAME` | no | plain var (in `.dev.vars`/dashboard header), not a secret |
 
 ```bash

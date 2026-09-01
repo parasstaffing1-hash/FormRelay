@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
-  resendProvider, httpProvider, selectProvider, senderAddress,
+  resendProvider, sendLayerProvider, httpProvider, selectProvider, senderAddress,
   sendNotification, sendAutoReply, EmailDeliveryError,
   submissionEmailHtml, submissionEmailText,
 } = require('../.test-build/email.js');
@@ -89,6 +89,37 @@ test('reply-to is set from the respondent address when it is valid', async () =>
   assert.ok(sentBody.text, 'a plaintext alternative must be included');
 });
 
+test('the native SendLayer adapter maps the API contract and preserves idempotency', async () => {
+  let requestUrl = null;
+  let requestInit = null;
+  const result = await withFetch(
+    async (url, init) => {
+      requestUrl = url;
+      requestInit = init;
+      return okResponse({ data: { id: 'em_123' } });
+    },
+    () => sendLayerProvider('https://api.sendlayer.test/v1/emails', 'mail_live_test').send({
+      to: 'owner@acme.com',
+      from: 'FormRelay <forms@acme.com>',
+      subject: 'New submission',
+      html: '<p>hello</p>',
+      text: 'hello',
+      replyTo: 'ada@acme.com',
+      idempotencyKey: 'formrelay:f1:42:notification',
+    })
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.provider, 'sendlayer');
+  assert.equal(result.id, 'em_123');
+  assert.equal(requestUrl, 'https://api.sendlayer.test/v1/emails');
+  assert.equal(requestInit.headers.Authorization, 'Bearer mail_live_test');
+  assert.equal(requestInit.headers['Idempotency-Key'], 'formrelay:f1:42:notification');
+  const body = JSON.parse(requestInit.body);
+  assert.deepEqual(body.to, ['owner@acme.com']);
+  assert.equal(body.reply_to, 'ada@acme.com');
+  assert.equal(body.replyTo, undefined);
+});
+
 /* ------------------------------------------------------------------ skips */
 
 test('no configured provider is a skip, not a failure and not a success', async () => {
@@ -115,6 +146,7 @@ test('missing recipient and disabled autoresponder are skips with reasons', asyn
 
 test('provider selection honours configuration and falls back sensibly', () => {
   assert.equal(selectProvider({ RESEND_API_KEY: 'k' }).name, 'resend');
+  assert.equal(selectProvider({ SENDLAYER_API_URL: 'https://api.sendlayer.test/v1/emails', SENDLAYER_API_KEY: 'k' }).name, 'sendlayer');
   assert.equal(selectProvider({ EMAIL_API_URL: 'https://mail.internal/send' }).name, 'http');
   assert.equal(selectProvider({ EMAIL_PROVIDER: 'http', EMAIL_API_URL: 'https://x/send' }).name, 'http');
   assert.equal(selectProvider({}), null, 'no configuration means no provider');
