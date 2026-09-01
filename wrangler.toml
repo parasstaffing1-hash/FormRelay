@@ -1,21 +1,28 @@
 name = "formrelay"
 main = "src/index.tsx"
-compatibility_date = "2025-01-01"
+compatibility_date = "2026-09-01"
 # Required by the Postgres driver (postgres.js needs node:net / node:crypto shims).
 compatibility_flags = ["nodejs_compat"]
 
 # Pools Postgres connections on Cloudflare's side. A Worker opens a connection per isolate
 # and Postgres caps concurrent connections, so connecting directly does not survive traffic.
-# Create with: npx wrangler hyperdrive create formrelay-pg --connection-string="<url>"
-# then paste the id below and uncomment.
-# [[hyperdrive]]
-# binding = "HYPERDRIVE"
-# id = "REPLACE_WITH_YOUR_HYPERDRIVE_ID"
+# Created with: npx wrangler hyperdrive create formrelay-pg --connection-string="<url>"
+# The credential lives in the Hyperdrive config on Cloudflare's side, not in this file.
+[[hyperdrive]]
+binding = "HYPERDRIVE"
+id = "c708600d7927420cb6158fdb6dc96d92"
 
-[[d1_databases]]
-binding = "DB"
-database_name = "formrelay"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+# This deployment uses PostgreSQL (Aiven) rather than D1. The Worker supports either --
+# see src/dbconnect.ts -- so switching back is uncommenting this block, filling in a real
+# database_id, and removing the DATABASE_URL secret. It is commented rather than deleted
+# because a placeholder id fails deployment, and both engines remain supported and tested.
+#
+#   npx wrangler d1 create formrelay
+#
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "formrelay"
+# database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
 
 # File uploads, plus spill storage for submission payloads over 10 KB.
 # Create the bucket once: npx wrangler r2 bucket create formrelay-files
