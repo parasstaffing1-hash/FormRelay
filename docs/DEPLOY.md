@@ -6,7 +6,7 @@ run those yourself — the rest can be handed off.
 ## 0. Prerequisites
 
 A Cloudflare account (the free plan is enough). This checkout is configured to use the
-existing PostgreSQL database through `DATABASE_URL`; D1 remains supported as an alternative.
+existing PostgreSQL database through the `HYPERDRIVE` binding; D1 remains supported as an alternative.
 R2 is already bound for file uploads and large-payload spillover.
 
 ## 1. Sign in to Cloudflare
@@ -25,9 +25,10 @@ npx wrangler whoami
 
 ### Recommended: use the existing PostgreSQL database
 
-The current `wrangler.toml` intentionally does not contain a fake D1 id. Initialize the
-PostgreSQL schema from a machine that can reach the database, record the current migrations,
-and run the smoke check:
+The current `wrangler.toml` already contains the production `HYPERDRIVE` binding. Confirm that
+its Cloudflare configuration points to the intended PostgreSQL database. Initialize the schema
+from a machine that can reach that database, record the current migrations, and run the smoke
+check:
 
 ```bash
 npm run pg:init
@@ -35,15 +36,18 @@ npm run migrate:pg:baseline
 npm run pg:smoke
 ```
 
-For the first small deployment, set the connection string as a Worker secret:
+`DATABASE_URL` is still useful in local `.dev.vars` for the migration scripts, but do not add
+the raw database URL to the Worker when `HYPERDRIVE` is configured: the application gives the
+Hyperdrive connection precedence.
+
+If the Hyperdrive binding is not available in your Cloudflare account, create one first:
 
 ```bash
-npx wrangler secret put DATABASE_URL
+npx wrangler hyperdrive create formrelay-pg --connection-string="postgres://USER:PASSWORD@HOST:5432/DATABASE"
 ```
 
-For higher traffic, create Hyperdrive for the same database, uncomment the `[[hyperdrive]]`
-block in `wrangler.toml`, and remove the raw `DATABASE_URL` secret. Do not commit either
-credential.
+Copy the returned id into the `[[hyperdrive]]` block in `wrangler.toml`. Do not commit the
+connection string or any database credential.
 
 ### Alternative: use Cloudflare D1
 
@@ -104,13 +108,8 @@ a failure rolls back in full rather than leaving the schema half-changed.
 `schema.postgres.sql` is generated — run `npm run pg:schema` after editing `schema.sql`,
 never edit it directly.
 
-Set the connection string as a secret, and prefer Hyperdrive for connection pooling (see
-the commented block in `wrangler.toml`) — Workers open a connection per isolate and
-Postgres caps concurrent connections.
-
-```bash
-npx wrangler secret put DATABASE_URL
-```
+The deployed Worker uses the `HYPERDRIVE` binding shown in `wrangler.toml`. For local migration
+commands, put `DATABASE_URL` in the ignored `.dev.vars` file only.
 
 ## 4. Set the secrets
 
