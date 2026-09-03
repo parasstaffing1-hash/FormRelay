@@ -10,7 +10,7 @@ compatibility_flags = ["nodejs_compat"]
 # The credential lives in the Hyperdrive config on Cloudflare's side, not in this file.
 [[hyperdrive]]
 binding = "HYPERDRIVE"
-id = "c708600d7927420cb6158fdb6dc96d92"
+id = "28f5f97668894b68a4c8d56bafd39dcf"
 
 # This deployment uses PostgreSQL (Aiven) rather than D1. The Worker supports either --
 # see src/dbconnect.ts -- so switching back is uncommenting this block, filling in a real
@@ -29,7 +29,7 @@ id = "c708600d7927420cb6158fdb6dc96d92"
 # `wrangler dev` simulates this locally, so no bucket is needed for local work.
 [[r2_buckets]]
 binding = "FILES"
-bucket_name = "formrelay-files"
+bucket_name = "opensend-attachments"
 
 # Drives webhook retries. Every five minutes the Worker drains deliveries whose
 # backoff has elapsed; without this trigger a failed delivery is never retried.
