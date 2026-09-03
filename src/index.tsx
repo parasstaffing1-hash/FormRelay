@@ -164,7 +164,7 @@ import { resolveDatabase } from "./dbconnect";
 
 /** Must match the API limiter window in `api.ts`, or the sweep would delete live windows. */
 const RATE_WINDOW_MS = 60_000;
-import { getFiles, countFiles, totalStorage, getFile, saveUpload, deleteFile } from "./files";
+import { getFiles, countFiles, totalStorage, getFile, saveUpload, deleteFile, validateUploadCount } from "./files";
 import { CLIENT_JS_WITH_GUARDS, GUARDS_JS } from "./ui/client";
 import { CSS } from "./ui/styles";
 import { AppShell, CommandItem, THEME_BOOT, PALETTE_WIRE } from "./ui/shell";
@@ -584,6 +584,36 @@ function isSubmitPath(url: string): boolean {
   return /^\/f\/[^/]+$/.test(new URL(url).pathname);
 }
 
+function queueUploads(
+  executionCtx: ExecutionContext,
+  env: Bindings,
+  formId: string,
+  submissionId: number | null,
+  uploads: { fieldName: string; file: File }[]
+): void {
+  if (!env.FILES || uploads.length === 0) return;
+  executionCtx.waitUntil(
+    Promise.all(uploads.map(async (upload) => {
+      try {
+        await saveUpload(env, formId, submissionId, upload.fieldName, upload.file);
+        if (submissionId !== null) {
+          await recordEvent(env.DB, submissionId, "file_upload", "ok", `${upload.file.name} stored`);
+        }
+      } catch (error) {
+        if (submissionId !== null) {
+          await recordEvent(
+            env.DB,
+            submissionId,
+            "file_upload",
+            "failed",
+            `${upload.file.name}: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
+    }))
+  );
+}
+
 app.use("*", async (c, next) => {
   if (c.req.method !== "POST" || !isSubmitPath(c.req.url)) return next();
   const declared = Number(c.req.header("content-length") ?? "0");
@@ -717,6 +747,7 @@ app.post("/f/:id", async (c) => {
       const effectiveBlock = smartState?.required[block.id] !== undefined ? { ...block, required: smartState.required[block.id] } : block;
       if (block.type === "file") {
         const fieldFiles = uploads.filter((upload) => upload.fieldName === block.id).map((upload) => upload.file);
+        const countError = validateUploadCount(fieldFiles.length, block.multiple);
         const accepted = (block.accept ?? "").split(",").map((item) => item.trim().toLowerCase()).filter(Boolean);
         const invalidType = accepted.length > 0 && fieldFiles.some((file) => {
           const name = file.name.toLowerCase();
@@ -724,7 +755,8 @@ app.post("/f/:id", async (c) => {
           return !accepted.some((rule) => rule.startsWith(".") ? name.endsWith(rule) : rule.endsWith("/*") ? mime.startsWith(rule.slice(0, -1)) : mime === rule);
         });
         const invalidSize = block.maxSize != null && fieldFiles.some((file) => file.size > Number(block.maxSize));
-        if (invalidType) errors[block.id] = "This file type is not allowed.";
+        if (countError) errors[block.id] = countError;
+        else if (invalidType) errors[block.id] = "This file type is not allowed.";
         else if (invalidSize) errors[block.id] = `Each file must be smaller than ${Math.round(Number(block.maxSize) / 1024 / 1024 * 10) / 10} MB.`;
       }
       const err = validateBlockValue(effectiveBlock, raw);
@@ -925,12 +957,7 @@ app.post("/f/:id", async (c) => {
       if (recurrence !== "off") await setSubmissionCohort(c.env.DB, submissionId, cohortFor(Date.now(), recurrence));
     }
     if (!verdict.spam && form.one_per_respondent === 1) setCookie(c, `fr_responded_${formId}`, "1", { httpOnly: true, sameSite: "Lax", path: `/f/${formId}`, maxAge: 31536000 });
-    if (c.env.FILES && uploads.length > 0 && !verdict.spam) {
-      const env = c.env;
-      c.executionCtx.waitUntil(
-        Promise.allSettled(uploads.map((u) => saveUpload(env, formId, submissionId, u.fieldName, u.file)))
-      );
-    }
+    if (!verdict.spam) queueUploads(c.executionCtx, c.env, formId, submissionId, uploads);
     if (!verdict.spam) {
       // Public submit path: there is no session, so the workspace comes from the form
       // itself. Letting this fall back to the bootstrap workspace would silently stop
@@ -1068,12 +1095,7 @@ app.post("/f/:id", async (c) => {
   }
   const submissionId = persistedV1.value;
 
-  if (c.env.FILES && uploads.length > 0 && !verdict.spam) {
-    const env = c.env;
-    c.executionCtx.waitUntil(
-      Promise.allSettled(uploads.map((u) => saveUpload(env, formId, submissionId, u.fieldName, u.file)))
-    );
-  }
+  if (!verdict.spam) queueUploads(c.executionCtx, c.env, formId, submissionId, uploads);
 
   if (!verdict.spam) {
     // Public path — workspace comes from the form, not from a session. See above.

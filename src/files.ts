@@ -4,6 +4,15 @@ import { DEFAULT_WORKSPACE } from "./db";
 
 export const FILES_PAGE_SIZE = 25;
 
+/**
+ * The browser's `multiple` attribute is only a convenience. A client can still send
+ * several parts for a single-file field, so the submission handler must enforce the
+ * builder setting server-side as well.
+ */
+export function validateUploadCount(fileCount: number, multiple = false): string | null {
+  return !multiple && fileCount > 1 ? "Only one file is allowed." : null;
+}
+
 export function sanitizeFilename(raw: string): string {
   const base = (raw.split(/[/\\]/).pop() ?? "").trim();
   const cleaned = base.replace(/[\u0000-\u001f<>:"|?*]/g, "").trim();
@@ -33,11 +42,17 @@ export async function saveUpload(
     field_name: fieldName,
     created_at: Date.now(),
   };
-  await env.DB.prepare(
-    "INSERT INTO files (id, form_id, submission_id, filename, content_type, size, r2_key, field_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-  )
-    .bind(row.id, row.form_id, row.submission_id, row.filename, row.content_type, row.size, row.r2_key, row.field_name, row.created_at)
-    .run();
+  try {
+    await env.DB.prepare(
+      "INSERT INTO files (id, form_id, submission_id, filename, content_type, size, r2_key, field_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+      .bind(row.id, row.form_id, row.submission_id, row.filename, row.content_type, row.size, row.r2_key, row.field_name, row.created_at)
+      .run();
+  } catch (error) {
+    // Do not leave an unreferenced object behind when the metadata write fails.
+    try { await env.FILES.delete(key); } catch {}
+    throw error;
+  }
   return row;
 }
 

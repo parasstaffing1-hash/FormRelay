@@ -204,7 +204,7 @@ test('an unknown target is refused without writing', async () => {
 /* ---------- listings reached through a form ---------- */
 
 const { listWebhooks, listDeadLetters, listContacts, countContacts } = require('../.test-build/db.js');
-const { getFiles, countFiles } = require('../.test-build/files.js');
+const { getFiles, countFiles, saveUpload, validateUploadCount } = require('../.test-build/files.js');
 
 /** Captures the SQL so the tests assert on the join, not just the returned rows. */
 function sqlSpy(rows = []) {
@@ -278,4 +278,34 @@ test('the file count matches the file listing', async () => {
   const db = sqlSpy();
   await countFiles(db, { workspaceId: 'ws_a' });
   assert.match(db.seen[0], /JOIN forms fo ON fo\.id = fi\.form_id WHERE fo\.workspace_id = \?/);
+});
+
+test('single-file fields reject extra uploads server-side', () => {
+  assert.equal(validateUploadCount(0, false), null);
+  assert.equal(validateUploadCount(1, false), null);
+  assert.equal(validateUploadCount(2, true), null);
+  assert.equal(validateUploadCount(2, false), 'Only one file is allowed.');
+});
+
+test('an R2 object is removed when its file metadata write fails', async () => {
+  const uploaded = [];
+  const deleted = [];
+  const env = {
+    FILES: {
+      async put(key, file) { uploaded.push({ key, file }); },
+      async delete(key) { deleted.push(key); },
+    },
+    DB: {
+      prepare() {
+        return { bind() { return { async run() { throw new Error('database unavailable'); } }; } };
+      },
+    },
+  };
+
+  await assert.rejects(
+    () => saveUpload(env, 'form_1', 42, 'attachment', new File(['contents'], 'note.txt', { type: 'text/plain' })),
+    /database unavailable/
+  );
+  assert.equal(uploaded.length, 1);
+  assert.deepEqual(deleted, [uploaded[0].key]);
 });
